@@ -19,6 +19,37 @@ Core guarantees:
 ## Minimal usage
 
 ```python
-graph = SingleModelRecipe(universe_name="u1").compile()
-run_id = WorkflowRunner(runs_root=Path("runs"), catalog=catalog).run(graph, {"exp": "quick"})
+graph = SingleModelRecipe(dataset_name="u1").compile()
+run_id = WorkflowRunner(runs_dir=Path("runs"), data_catalog=catalog).run(
+    graph,
+    run_config={"exp": "quick"},
+)
 ```
+
+## Real data + advanced models
+
+- Real vendor integration is available via `PolygonMarketDataVendor`.
+- Additional non-linear regressors are available:
+  - `algorithm="loess"`
+  - `algorithm="kernel_ridge"`
+
+See:
+
+- `trading_research/examples/08_polygon_vendor_ingest.py`
+- `trading_research/examples/09_advanced_models_run.py`
+
+## Quant dashboard
+
+Launch the dashboard:
+
+```bash
+python3 -m streamlit run trading_research/apps/quant_dashboard.py
+```
+
+The dashboard provides:
+
+- run flow map and lineage edges
+- fold-level diagnostics and performance views
+- time and asset-level deep dives
+- recommendations aimed at “what to do next”
+- a machine-readable handoff payload for downstream quant agents

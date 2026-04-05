@@ -1,5 +1,9 @@
 """Model layer exports."""
 
+from trading_research.models.advanced_regression import (
+    KernelRidgeRegressor,
+    LoessRegressor,
+)
 from trading_research.models.registry import (
     HyperoptSpec,
     ModelRegistry,
@@ -10,6 +14,8 @@ from trading_research.models.registry import (
 
 __all__ = [
     "HyperoptSpec",
+    "KernelRidgeRegressor",
+    "LoessRegressor",
     "ModelRegistry",
     "ModelSpec",
     "TrainingRecipe",

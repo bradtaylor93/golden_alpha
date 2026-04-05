@@ -30,3 +30,36 @@ Inspection endpoints:
 - `load_predictions(node_name=..., outer_fold_id=...)`
 - `load_inner_validation(node_name=..., outer_fold_id=...)`
 - `load_training_snapshot(node_name=..., outer_fold_id=...)`
+
+## Quant dashboard
+
+The dashboard gives a deep, fold-aware, end-to-end view for human quants and quant agents.
+
+Run:
+
+```bash
+python3 -m streamlit run trading_research/apps/quant_dashboard.py -- --runs-root runs
+```
+
+Views include:
+
+- **Run Overview**: run metadata, node count, artifact count, graph topology.
+- **Flow / Graph View**: node dependency graph and per-node lineage preview.
+- **Model & Fold Diagnostics**:
+  - fold-level train/test metrics
+  - train-test deviance gap
+  - coefficient stability
+  - prediction disagreement
+- **Performance over time**:
+  - cumulative test PnL proxy from prediction * target
+  - rolling correlation and rolling error
+- **Performance by asset**:
+  - MAE, RMSE, residual std, directional hit-rate per asset
+  - fold-by-asset stability matrix
+- **Deep Dive**:
+  - node-specific artifact explorers
+  - raw fold artifact tables
+  - training snapshots when available
+- **Next-best-actions panel**:
+  - machine-readable recommendation JSON
+  - intended for direct handoff to a quant agent.

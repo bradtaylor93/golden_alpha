@@ -51,3 +51,24 @@ class MockMarketDataVendor:
                     }
                 )
         return pd.DataFrame(rows)
+
+    def fetch_and_persist(
+        self,
+        *,
+        catalog: "DataCatalog",
+        dataset_name: str,
+        assets: list[str],
+        metadata: dict[str, object] | None = None,
+    ) -> pd.DataFrame:
+        """Fetch bars and persist into the provided catalog."""
+        from trading_research.data.catalog import DataCatalog
+
+        if not isinstance(catalog, DataCatalog):
+            raise TypeError("catalog must be a DataCatalog instance")
+        bars = self.fetch_bars(assets)
+        catalog.persist_processed_bars(
+            dataset_name,
+            bars,
+            metadata=metadata or {"source": "mock", "assets": assets},
+        )
+        return bars

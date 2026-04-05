@@ -456,6 +456,8 @@ class WorkflowRunner:
         if coef is not None:
             coef_vals = list(map(float, coef.tolist())) if hasattr(coef, "tolist") else [float(v) for v in coef]
             model_state["coef"] = coef_vals
+        if hasattr(model, "params_"):
+            model_state["params_"] = getattr(model, "params_")
 
         train_metric = float(((y_train - train_pred) ** 2).mean()) if len(y_train) else float("nan")
         test_metric = float(((y_test - test_pred) ** 2).mean()) if len(y_test) else float("nan")

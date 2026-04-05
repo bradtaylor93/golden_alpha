@@ -48,7 +48,9 @@ class DataCatalog:
         meta_df = read_dataframe(self.metadata_path)
         if "metadata" in meta_df.columns:
             meta_df["metadata"] = meta_df["metadata"].map(
-                lambda v: v if isinstance(v, str) else json.dumps(v if v is not None else {}, sort_keys=True)
+                lambda v: v
+                if isinstance(v, str)
+                else json.dumps(v if v is not None else {}, sort_keys=True, default=str)
             )
         version_hash = stable_hash(
             {
@@ -66,7 +68,7 @@ class DataCatalog:
                     "version_hash": version_hash,
                     "path": str(path),
                     "rows": len(df),
-                    "metadata": json.dumps(metadata or {}, sort_keys=True),
+                    "metadata": json.dumps(metadata or {}, sort_keys=True, default=str),
                 }
             ]
         )

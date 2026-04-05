@@ -32,11 +32,15 @@ bars = MockMarketDataVendor().fetch_bars(["AAPL"])
 catalog.persist_processed_bars("us_equities", bars)
 
 recipe = SingleModelRecipe(
-    universe_name="us_equities",
+    dataset_name="us_equities",
+    universe=("AAPL",),
     task_name="forward_return_20",
     model_spec=ModelSpec(name="ridge", algorithm="ridge", params={"alpha": 1.0}),
 )
 
-run_id = WorkflowRunner(Path("runs"), catalog).run(recipe.compile(), {"recipe": "single_model"})
+run_id = WorkflowRunner(runs_dir=Path("runs"), data_catalog=catalog).run(
+    recipe.compile(),
+    run_config={"recipe": "single_model"},
+)
 print(run_id)
 ```

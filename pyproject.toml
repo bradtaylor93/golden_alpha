@@ -12,6 +12,9 @@ dependencies = [
   "numpy>=2.0.0",
   "pandas>=3.0.0",
   "pyarrow>=23.0.0",
+  "plotly>=6.6.0",
+  "requests>=2.33.1",
+  "streamlit>=1.56.0",
 ]
 
 [tool.setuptools]

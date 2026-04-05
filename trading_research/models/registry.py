@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 import numpy as np
 
+from trading_research.models.advanced_regression import KernelRidgeRegressor, LoessRegressor
 from trading_research.models.classification import LogisticClassifier
 from trading_research.models.regression import RidgeRegressor
 from trading_research.validation.splits import ValidationSpec
@@ -54,6 +55,20 @@ class ModelRegistry:
 def default_model_registry() -> ModelRegistry:
     registry = ModelRegistry()
     registry.register("ridge", lambda p: RidgeRegressor(alpha=float(p.get("alpha", 1.0))))
+    registry.register(
+        "kernel_ridge",
+        lambda p: KernelRidgeRegressor(
+            alpha=float(p.get("alpha", 1.0)),
+            gamma=float(p.get("gamma", 0.5)),
+        ),
+    )
+    registry.register(
+        "loess",
+        lambda p: LoessRegressor(
+            frac=float(p.get("frac", 0.3)),
+            ridge=float(p.get("ridge", 1e-4)),
+        ),
+    )
     registry.register(
         "logistic",
         lambda p: LogisticClassifier(
