@@ -569,6 +569,66 @@ class WorkflowRunner:
             out[f"diag_{col}"] = out.groupby("asset", observed=True)[f"diag_{col}"].shift(1).fillna(0.0)
         return out
 
+    @staticmethod
+    def _select_feature_columns(
+        merged: pd.DataFrame,
+        *,
+        model_node: ModelNode,
+    ) -> list[str]:
+        cols = [c for c in merged.columns if c not in {"timestamp", "asset", "target"}]
+        selected = cols
+        if model_node.inputs.feature_include_regex:
+            regex = model_node.inputs.feature_include_regex
+            selected = [c for c in selected if re.search(regex, c)]
+        if model_node.inputs.feature_exclude_regex:
+            regex = model_node.inputs.feature_exclude_regex
+            selected = [c for c in selected if not re.search(regex, c)]
+        if model_node.inputs.max_features is not None:
+            selected = selected[: max(1, int(model_node.inputs.max_features))]
+        return selected
+
+    @staticmethod
+    def _clip_frame_by_quantile(
+        frame: pd.DataFrame,
+        columns: list[str],
+        *,
+        lower_q: float,
+        upper_q: float,
+    ) -> pd.DataFrame:
+        out = frame.copy()
+        if out.empty or not columns:
+            return out
+        lo = max(0.0, float(lower_q))
+        hi = min(1.0, float(upper_q))
+        if lo >= hi:
+            return out
+        for col in columns:
+            series = pd.to_numeric(out[col], errors="coerce")
+            q_lo = series.quantile(lo)
+            q_hi = series.quantile(hi)
+            out[col] = series.clip(lower=q_lo, upper=q_hi).fillna(0.0)
+        return out
+
+    @staticmethod
+    def _scale_train_test(
+        train_df: pd.DataFrame,
+        test_df: pd.DataFrame,
+        feature_cols: list[str],
+    ) -> tuple[pd.DataFrame, pd.DataFrame]:
+        if not feature_cols:
+            return train_df, test_df
+        tr = train_df.copy()
+        te = test_df.copy()
+        for col in feature_cols:
+            tr_col = pd.to_numeric(tr[col], errors="coerce").fillna(0.0)
+            mean = float(tr_col.mean())
+            std = float(tr_col.std(ddof=0))
+            denom = std if std > 1e-12 else 1.0
+            tr[col] = ((tr_col - mean) / denom).clip(-8.0, 8.0)
+            te_col = pd.to_numeric(te[col], errors="coerce").fillna(0.0)
+            te[col] = ((te_col - mean) / denom).clip(-8.0, 8.0)
+        return tr, te
+
     def _fit_model_fold(
         self,
         *,
@@ -586,7 +646,7 @@ class WorkflowRunner:
         train_df = merged.iloc[: tr + 1].copy()
         test_df = merged.iloc[ts : te + 1].copy()
 
-        feature_cols = [c for c in merged.columns if c not in {"timestamp", "asset", "target"}]
+        feature_cols = self._select_feature_columns(merged, model_node=model_node)
         if not feature_cols:
             raise ValueError("No feature columns available for model fit.")
         if train_df.empty or test_df.empty:
@@ -617,6 +677,15 @@ class WorkflowRunner:
             snapshot = merged[["timestamp", "asset"] + feature_cols + ["target"]].copy()
             snapshot["outer_fold_id"] = int(fold_row["outer_fold_id"])
             return empty_pred, model_state, diag_df, snapshot
+
+        # Optional robust preprocessing for high-variance/meta stacks.
+        if model_node.inputs.clip_quantiles is not None:
+            lo, hi = model_node.inputs.clip_quantiles
+            train_df = self._clip_frame_by_quantile(train_df, feature_cols, lower_q=lo, upper_q=hi)
+            test_df = self._clip_frame_by_quantile(test_df, feature_cols, lower_q=lo, upper_q=hi)
+        if model_node.inputs.standardize_features:
+            train_df, test_df = self._scale_train_test(train_df, test_df, feature_cols)
+
         x_train = train_df[feature_cols].to_numpy(dtype=float)
         y_train = train_df["target"].to_numpy(dtype=float)
         x_test = test_df[feature_cols].to_numpy(dtype=float)
@@ -1026,12 +1095,50 @@ class WorkflowRunner:
         inputs: SelectionInputs = node.inputs
         pred_refs = self._resolve_refs(inputs.prediction_tables, produced, artifact_type="PredictionArtifact")
         candidates: list[dict[str, Any]] = []
+        gated_errors: list[float] = []
+        gate_predictions = (
+            self._resolve_refs(inputs.gate_prediction_tables, produced, artifact_type="PredictionArtifact")
+            if inputs.gate_prediction_tables
+            else []
+        )
+        if gate_predictions:
+            # Use average predicted gate signal as a conservative threshold.
+            for gate_ref in gate_predictions:
+                gate_df = store.load(gate_ref.artifact_id)
+                gate_test = gate_df[gate_df["split_role"] == "test"]
+                if gate_test.empty:
+                    continue
+                gated_errors.extend(pd.to_numeric(gate_test["prediction"], errors="coerce").fillna(0.0).tolist())
+        gate_threshold = (
+            float(pd.Series(gated_errors).quantile(0.6))
+            if gated_errors
+            else None
+        )
         for ref in pred_refs:
             pred = store.load(ref.artifact_id)
             test = pred[pred["split_role"] == "test"]
             mse = float(((test["target"] - test["prediction"]) ** 2).mean()) if not test.empty else float("inf")
-            candidates.append({"artifact_id": ref.artifact_id, "node_name": ref.node_name, "metric_mse": mse})
+            gated_mse = mse
+            if gate_threshold is not None and not test.empty:
+                # Heuristic: if a candidate looks like a meta model, evaluate it only
+                # where predicted error regime is favorable.
+                lowered = ref.node_name.lower()
+                if "meta" in lowered or "champion" in lowered:
+                    mask = pd.to_numeric(test["prediction"], errors="coerce").abs() <= gate_threshold
+                    test_eval = test[mask]
+                    if not test_eval.empty:
+                        gated_mse = float(((test_eval["target"] - test_eval["prediction"]) ** 2).mean())
+            candidates.append(
+                {
+                    "artifact_id": ref.artifact_id,
+                    "node_name": ref.node_name,
+                    "metric_mse": mse,
+                    "metric_mse_gated": gated_mse,
+                }
+            )
         comp = pd.DataFrame(candidates).sort_values("metric_mse", ascending=True).reset_index(drop=True)
+        sort_metric = "metric_mse_gated" if "metric_mse_gated" in comp.columns else "metric_mse"
+        comp = comp.sort_values(sort_metric, ascending=True).reset_index(drop=True)
 
         if node.strategy_name == "best_recent_model":
             chosen = comp.iloc[0]
@@ -1040,9 +1147,12 @@ class WorkflowRunner:
                 "chosen_prediction_artifact": chosen["artifact_id"],
                 "chosen_node_name": chosen["node_name"],
                 "metric_mse": float(chosen["metric_mse"]),
+                "metric_mse_gated": float(chosen.get("metric_mse_gated", chosen["metric_mse"])),
+                "gate_threshold": gate_threshold,
             }])
         elif node.strategy_name == "weighted_blend":
-            inv = 1.0 / (comp["metric_mse"] + 1e-9)
+            metric = comp[sort_metric]
+            inv = 1.0 / (metric + 1e-9)
             weights = inv / inv.sum()
             out = comp.copy()
             out["weight"] = weights

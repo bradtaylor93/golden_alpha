@@ -60,7 +60,7 @@ class ChampionEdgeRecipe(Recipe):
         default_factory=lambda: ModelSpec("ret_ridge_stable", "ridge", {"alpha": 1.25})
     )
     meta_model: ModelSpec = field(
-        default_factory=lambda: ModelSpec("champion_meta_return", "kernel_ridge", {"alpha": 0.5, "gamma": 0.12})
+        default_factory=lambda: ModelSpec("champion_meta_return", "ridge", {"alpha": 2.2})
     )
 
     def compile(self) -> WorkflowGraph:
@@ -473,6 +473,18 @@ class ChampionEdgeRecipe(Recipe):
                 model_spec=self.meta_model,
                 training_recipe=TrainingRecipe(save_training_snapshot=True),
                 labels={"task_family": "return", "role": "champion_meta"},
+                training_overrides={
+                    "max_prediction_inputs": 6,
+                    "prediction_priority_order": [
+                        "ret_ridge_stable",
+                        "ret_kernel_rich",
+                        "ret_loess_base",
+                        "ret_persistence_baseline",
+                        "err_kernel_abs",
+                        "disagreement_forecaster",
+                    ],
+                    "clip_abs_zscore": 6.0,
+                },
                 inputs=ModelInputs(
                     feature_tables=["features_rich", "features_regime", "proj_model_health"],
                     prediction_tables=[
@@ -530,7 +542,11 @@ class ChampionEdgeRecipe(Recipe):
                         "ret_kernel_rich",
                         "ret_ridge_stable",
                         "champion_meta_return",
-                    ]
+                    ],
+                    gate_prediction_tables=["disagreement_forecaster", "err_kernel_abs"],
+                    gated_model_name="champion_meta_return",
+                    max_pred_abs_error=0.01,
+                    max_pred_disagreement=0.01,
                 ),
             )
         )

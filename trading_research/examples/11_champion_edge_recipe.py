@@ -24,6 +24,35 @@ def _oos_metrics(pred: pd.DataFrame) -> dict[str, float]:
     }
 
 
+def _gate_meta_predictions(
+    base: pd.DataFrame,
+    meta: pd.DataFrame,
+    *,
+    max_pred_abs_err: float = 0.012,
+    max_pred_disagreement: float = 0.010,
+) -> pd.DataFrame:
+    """Fallback from meta to base when uncertainty proxies are elevated."""
+    left = meta.copy()
+    right = base[["timestamp", "asset", "split_role", "prediction"]].rename(
+        columns={"prediction": "base_prediction"}
+    )
+    merged = left.merge(right, on=["timestamp", "asset", "split_role"], how="left")
+    risk_cols = [c for c in merged.columns if c.startswith("pred_err_") or c.startswith("pred_disagreement_")]
+    if not risk_cols:
+        return meta
+    risk_err_cols = [c for c in risk_cols if c.startswith("pred_err_")]
+    risk_dis_cols = [c for c in risk_cols if c.startswith("pred_disagreement_")]
+    pred_abs_err = (
+        merged[risk_err_cols].mean(axis=1) if risk_err_cols else pd.Series(0.0, index=merged.index)
+    )
+    pred_dis = (
+        merged[risk_dis_cols].mean(axis=1) if risk_dis_cols else pd.Series(0.0, index=merged.index)
+    )
+    high_risk = (pred_abs_err > max_pred_abs_err) | (pred_dis > max_pred_disagreement)
+    merged["prediction"] = merged["prediction"].where(~high_risk, merged["base_prediction"])
+    return merged[left.columns]
+
+
 def main() -> None:
     root = Path("trading_research/examples/_output/11_champion_edge")
     root.mkdir(parents=True, exist_ok=True)
@@ -63,6 +92,13 @@ def main() -> None:
     for node in candidate_nodes:
         frame = inspector.load_predictions(node)
         rows.append({"node_name": node, **_oos_metrics(frame)})
+
+    # Meta-gated variant: fallback to stable ridge in high-uncertainty conditions.
+    meta_pred = inspector.load_predictions("champion_meta_return")
+    ridge_pred = inspector.load_predictions("ret_ridge_stable")
+    gated_meta = _gate_meta_predictions(ridge_pred, meta_pred)
+    rows.append({"node_name": "champion_meta_gated", **_oos_metrics(gated_meta)})
+
     perf = pd.DataFrame(rows).sort_values("rmse", ascending=True).reset_index(drop=True)
 
     selector = inspector.load_artifact("champion_selector", artifact_type="SelectionArtifact")

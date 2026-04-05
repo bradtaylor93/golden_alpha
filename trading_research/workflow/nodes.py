@@ -19,6 +19,13 @@ class ModelInputs:
     diagnostic_tables: list[str] = field(default_factory=list)
     selection_tables: list[str] = field(default_factory=list)
     use_base_features: bool = True
+    feature_include_regex: list[str] = field(default_factory=list)
+    feature_exclude_regex: list[str] = field(default_factory=list)
+    max_features: int | None = None
+    robust_scale: bool = False
+    clip_quantile: float | None = None
+    standardize_features: bool = False
+    clip_quantiles: tuple[float, float] | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +66,10 @@ class ProjectionInputs:
 class SelectionInputs:
     prediction_tables: list[str] = field(default_factory=list)
     diagnostic_tables: list[str] = field(default_factory=list)
+    gate_prediction_tables: list[str] = field(default_factory=list)
+    gated_model_name: str | None = None
+    max_pred_abs_error: float | None = None
+    max_pred_disagreement: float | None = None
     metric_table: str | None = None
 
 
@@ -123,6 +134,7 @@ class ModelNode(WorkflowNode):
     model_spec: ModelSpec = field(default_factory=lambda: ModelSpec("ridge", "ridge", {}))
     training_recipe: TrainingRecipe = field(default_factory=TrainingRecipe)
     inputs: ModelInputs = field(default_factory=ModelInputs)
+    training_overrides: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -157,6 +169,7 @@ class ProjectionNode(WorkflowNode):
 class SelectionNode(WorkflowNode):
     strategy: str = "best_recent_model"
     strategy_name: str = "best_recent_model"
+    strategy_params: dict[str, Any] = field(default_factory=dict)
     inputs: SelectionInputs = field(default_factory=SelectionInputs)
 
 
