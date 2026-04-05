@@ -1,6 +1,7 @@
 """Recipe layer public exports."""
 
 from trading_research.recipes.base import Recipe
+from trading_research.recipes.champion_edge import ChampionEdgeRecipe
 from trading_research.recipes.comparison import FeatureComparisonRecipe
 from trading_research.recipes.diagnostics_meta import DiagnosticAwareMetaRecipe
 from trading_research.recipes.horizon_error_meta import HorizonErrorMetaRecipe
@@ -11,6 +12,7 @@ from trading_research.recipes.stacking import StackedModelRecipe
 
 __all__ = [
     "Recipe",
+    "ChampionEdgeRecipe",
     "SingleModelRecipe",
     "FeatureComparisonRecipe",
     "NestedTuningRecipe",

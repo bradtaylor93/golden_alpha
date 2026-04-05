@@ -26,6 +26,7 @@ It implements the requested two-layer architecture:
 PYTHONPATH=/workspace python3 trading_research/examples/01_single_model_run.py
 PYTHONPATH=/workspace python3 trading_research/examples/07_advanced_cross_target_meta_run.py
 PYTHONPATH=/workspace python3 trading_research/examples/10_spy_horizon_error_meta_recipe.py
+PYTHONPATH=/workspace python3 trading_research/examples/11_champion_edge_recipe.py
 ```
 
 ## Polygon vendor usage
