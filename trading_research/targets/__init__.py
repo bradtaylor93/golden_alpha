@@ -9,7 +9,7 @@ from trading_research.targets.volatility import make_forward_realized_volatility
 
 def default_task_registry() -> TaskRegistry:
     registry = TaskRegistry()
-    for h in (20, 40):
+    for h in (4, 10, 20, 40):
         registry.register(make_forward_return_task(h))
         registry.register(make_forward_realized_volatility_task(h))
         registry.register(make_up_down_task(h))

@@ -25,6 +25,7 @@ from trading_research.features import (
     FieldAdapterFeatureFamily,
     RegimeFeatureFamily,
 )
+from trading_research.features.research_pack import ResearchFeaturePackFamily
 from trading_research.models.registry import ModelRegistry, default_model_registry
 from trading_research.targets import TaskRegistry, default_task_registry
 from trading_research.utils.hashing import stable_hash
@@ -64,6 +65,7 @@ def default_feature_registry(cache_dir: Path | None = None) -> FeatureRegistry:
     registry.register(FieldAdapterFeatureFamily())
     registry.register(CrossAssetFeatureFamily())
     registry.register(RegimeFeatureFamily())
+    registry.register(ResearchFeaturePackFamily())
     return registry
 
 

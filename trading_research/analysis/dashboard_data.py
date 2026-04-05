@@ -189,3 +189,13 @@ def discover_runs(runs_root: Path | str = "runs") -> list[str]:
     for manifest in manifests:
         run_ids.append(manifest.parent.name)
     return sorted(set(run_ids))
+
+
+def load_table(path: Path | str) -> pd.DataFrame:
+    """Small helper for external analysis modules."""
+    p = Path(path)
+    if p.suffix.lower() == ".parquet":
+        return pd.read_parquet(p)
+    if p.suffix.lower() == ".csv":
+        return pd.read_csv(p)
+    raise ValueError(f"Unsupported table type: {p}")

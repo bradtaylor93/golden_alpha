@@ -65,9 +65,11 @@ def default_feature_registry(cache_dir: Path | None = None) -> FeatureRegistry:
     from trading_research.features.cross_asset import CrossAssetFeatureFamily
     from trading_research.features.field_adapter import FieldAdapterFeatureFamily
     from trading_research.features.regime import RegimeFeatureFamily
+    from trading_research.features.research_pack import ResearchFeaturePackFamily
 
     reg = FeatureRegistry(cache_dir=cache_dir)
     reg.register(BaselineFeatureFamily())
+    reg.register(ResearchFeaturePackFamily())
     reg.register(FieldAdapterFeatureFamily())
     reg.register(CrossAssetFeatureFamily())
     reg.register(RegimeFeatureFamily())

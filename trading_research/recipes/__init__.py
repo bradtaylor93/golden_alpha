@@ -3,6 +3,7 @@
 from trading_research.recipes.base import Recipe
 from trading_research.recipes.comparison import FeatureComparisonRecipe
 from trading_research.recipes.diagnostics_meta import DiagnosticAwareMetaRecipe
+from trading_research.recipes.horizon_error_meta import HorizonErrorMetaRecipe
 from trading_research.recipes.nested_tuning import NestedTuningRecipe
 from trading_research.recipes.selector import SelectorRecipe
 from trading_research.recipes.single_model import SingleModelRecipe
@@ -16,4 +17,5 @@ __all__ = [
     "StackedModelRecipe",
     "DiagnosticAwareMetaRecipe",
     "SelectorRecipe",
+    "HorizonErrorMetaRecipe",
 ]

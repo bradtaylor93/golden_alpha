@@ -25,19 +25,31 @@ It implements the requested two-layer architecture:
 ```bash
 PYTHONPATH=/workspace python3 trading_research/examples/01_single_model_run.py
 PYTHONPATH=/workspace python3 trading_research/examples/07_advanced_cross_target_meta_run.py
+PYTHONPATH=/workspace python3 trading_research/examples/10_spy_horizon_error_meta_recipe.py
 ```
 
 ## Polygon vendor usage
 
 ```python
-from trading_research.data.vendors import PolygonMarketDataVendor
-vendor = PolygonMarketDataVendor(api_key="YOUR_POLYGON_KEY")
+from trading_research.data.vendors import PolygonMarketDataVendor, PolygonVendorConfig
+vendor = PolygonMarketDataVendor(PolygonVendorConfig(api_key="YOUR_POLYGON_KEY"))
 bars = vendor.fetch_bars(
     assets=["AAPL", "MSFT"],
     start="2022-01-01",
     end="2023-01-01",
-    multiplier=1,
-    timespan="day",
+)
+```
+
+## Yahoo vendor usage
+
+```python
+from trading_research.data.vendors import YahooFinanceVendor
+
+vendor = YahooFinanceVendor()
+bars = vendor.fetch_bars(
+    assets=["SPY"],
+    period="2y",
+    interval="1h",
 )
 ```
 
