@@ -398,6 +398,13 @@ class WorkflowRunner:
         pred = store.load(pred_refs[0].artifact_id)
         if not {"target", "prediction", "timestamp", "asset"}.issubset(pred.columns):
             raise ValueError("PredictionArtifact must contain timestamp/asset/target/prediction columns.")
+        if "split_role" in pred.columns:
+            pred = pred[pred["split_role"] == "test"].copy()
+        pred = (
+            pred.groupby(["timestamp", "asset"], as_index=False)[["target", "prediction"]]
+            .mean()
+            .reset_index(drop=True)
+        )
 
         out = pred[["timestamp", "asset"]].copy()
         out["task_name"] = node.task_name
@@ -412,8 +419,14 @@ class WorkflowRunner:
             merged = out.copy()
             pred_cols: list[str] = []
             for i, ref in enumerate(pred_refs):
-                frame = store.load(ref.artifact_id)[["timestamp", "asset", "prediction"]].rename(
-                    columns={"prediction": f"pred_{i}"}
+                frame = store.load(ref.artifact_id)
+                if "split_role" in frame.columns:
+                    frame = frame[frame["split_role"] == "test"].copy()
+                frame = (
+                    frame.groupby(["timestamp", "asset"], as_index=False)[["prediction"]]
+                    .mean()
+                    .rename(columns={"prediction": f"pred_{i}"})
+                    .reset_index(drop=True)
                 )
                 pred_col = f"pred_{i}"
                 pred_cols.append(pred_col)
@@ -429,7 +442,9 @@ class WorkflowRunner:
         else:
             raise ValueError(f"Unsupported derived target kind: {target_kind}")
 
-        out = out.dropna().reset_index(drop=True)
+        out = out.dropna().groupby(["timestamp", "asset"], as_index=False)[["target"]].mean()
+        out["task_name"] = node.task_name
+        out = out.reset_index(drop=True)
         self._write_artifact(
             store=store,
             index=index,
@@ -543,11 +558,33 @@ class WorkflowRunner:
         for ref in prediction_refs:
             pred = store.load(ref.artifact_id)
             test = pred[pred["split_role"] == "test"][["timestamp", "asset", "prediction"]].copy()
+            test = (
+                test.groupby(["timestamp", "asset"], as_index=False)[["prediction"]]
+                .mean()
+                .reset_index(drop=True)
+            )
             col = f"pred_{ref.node_name}"
             test = test.rename(columns={"prediction": col})
             out = out.merge(test, on=["timestamp", "asset"], how="left")
             out[col] = out.groupby("asset", observed=True)[col].ffill().fillna(0.0)
         return out
+
+    @staticmethod
+    def _bars_from_fold_ref(
+        *,
+        fold_ref: ArtifactRef,
+        store: ArtifactStore,
+    ) -> pd.DataFrame | None:
+        if not fold_ref.upstream_ids:
+            return None
+        for upstream_id in fold_ref.upstream_ids:
+            try:
+                candidate = store.load(upstream_id)
+            except Exception:
+                continue
+            if {"timestamp", "asset"}.issubset(candidate.columns):
+                return candidate.copy()
+        return None
 
     def _augment_with_diagnostic_inputs(
         self,
@@ -637,14 +674,27 @@ class WorkflowRunner:
         targets: pd.DataFrame,
         fold_row: pd.Series,
         model_kind: str,
+        bars_for_fold: pd.DataFrame | None = None,
     ) -> tuple[pd.DataFrame, dict[str, Any], pd.DataFrame, pd.DataFrame]:
         merged = model_features.merge(targets[["timestamp", "asset", "target"]], on=["timestamp", "asset"], how="inner")
         merged = merged.sort_values(["timestamp", "asset"]).reset_index(drop=True)
         tr = int(fold_row["train_end_idx"])
         ts = int(fold_row["test_start_idx"])
         te = int(fold_row["test_end_idx"])
-        train_df = merged.iloc[: tr + 1].copy()
-        test_df = merged.iloc[ts : te + 1].copy()
+        if bars_for_fold is not None and not bars_for_fold.empty:
+            bars_idx = bars_for_fold.sort_values(["timestamp", "asset"]).reset_index(drop=True)
+            tr = max(0, min(tr, len(bars_idx) - 1))
+            ts = max(0, min(ts, len(bars_idx) - 1))
+            te = max(0, min(te, len(bars_idx) - 1))
+            test_start_ts = pd.to_datetime(bars_idx.iloc[ts]["timestamp"], utc=True)
+            test_end_ts = pd.to_datetime(bars_idx.iloc[te]["timestamp"], utc=True)
+            merged_ts = pd.to_datetime(merged["timestamp"], utc=True)
+            # Strict split boundary prevents train/test key overlap.
+            train_df = merged[merged_ts < test_start_ts].copy()
+            test_df = merged[(merged_ts >= test_start_ts) & (merged_ts <= test_end_ts)].copy()
+        else:
+            train_df = merged.iloc[: tr + 1].copy()
+            test_df = merged.iloc[ts : te + 1].copy()
 
         feature_cols = self._select_feature_columns(merged, model_node=model_node)
         if not feature_cols:
@@ -762,6 +812,7 @@ class WorkflowRunner:
         fold_ref = self._resolve_refs(inputs.fold_plans, produced, artifact_type="FoldPlanArtifact")[0]
         targets = store.load(target_ref.artifact_id)
         folds = store.load(fold_ref.artifact_id)
+        bars_for_fold = self._bars_from_fold_ref(fold_ref=fold_ref, store=store)
 
         prediction_refs = (
             self._resolve_refs(inputs.prediction_tables, produced, artifact_type="PredictionArtifact")
@@ -816,6 +867,7 @@ class WorkflowRunner:
                 targets=targets,
                 fold_row=fold_row,
                 model_kind=model_kind,
+                bars_for_fold=bars_for_fold,
             )
             all_pred.append(pred)
             all_diag.append(diag)
