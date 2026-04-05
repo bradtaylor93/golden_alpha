@@ -43,15 +43,40 @@ class FeatureRegistry:
             raise KeyError(f"Unknown feature family: {name}")
         return self._families[name]
 
-    def _cache_path(self, family: FeatureFamily, params: dict[str, object]) -> Path | None:
+    @staticmethod
+    def _bars_cache_fingerprint(bars: pd.DataFrame) -> dict[str, object]:
+        if bars.empty:
+            return {"rows": 0, "assets": [], "ts_min": None, "ts_max": None}
+        ts = pd.to_datetime(bars["timestamp"], utc=True, errors="coerce")
+        assets = sorted(bars["asset"].astype(str).dropna().unique().tolist())
+        return {
+            "rows": int(len(bars)),
+            "assets": assets,
+            "ts_min": str(ts.min()),
+            "ts_max": str(ts.max()),
+        }
+
+    def _cache_path(
+        self,
+        family: FeatureFamily,
+        params: dict[str, object],
+        bars: pd.DataFrame,
+    ) -> Path | None:
         if self._cache_dir is None:
             return None
-        key = stable_hash({"family": family.name, "version": family.version, "params": params})
+        key = stable_hash(
+            {
+                "family": family.name,
+                "version": family.version,
+                "params": params,
+                "bars_fingerprint": self._bars_cache_fingerprint(bars),
+            }
+        )
         return self._cache_dir / f"{family.name}_{key}.parquet"
 
     def build(self, bars: pd.DataFrame, spec: FeatureSpec) -> pd.DataFrame:
         family = self.get(spec.family_name)
-        cache_path = self._cache_path(family, spec.params)
+        cache_path = self._cache_path(family, spec.params, bars)
         if cache_path is not None and cache_path.exists():
             return read_table(cache_path)
         features = family.build(bars, spec.params)
