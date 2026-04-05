@@ -110,7 +110,7 @@ class ChampionEdgeRecipe(Recipe):
                 name="features_base",
                 depends_on=("bars",),
                 family_name="baseline",
-                params={"lookbacks": [1, 2, 4, 10, 20, 40]},
+                params={"lookbacks": [1, 2, 4, 10, 20, 40, 80, 120]},
                 labels={"role": "features", "pack": "base"},
             )
         )
@@ -119,7 +119,15 @@ class ChampionEdgeRecipe(Recipe):
                 name="features_rich",
                 depends_on=("bars",),
                 family_name="research_pack",
-                params={"short_window": 6, "medium_window": 20, "long_window": 60},
+                params={
+                    "short_window": 8,
+                    "medium_window": 32,
+                    "long_window": 160,
+                    "lookbacks": [2, 4, 8, 16, 32, 64, 96, 128],
+                    "sr_windows": [20, 40, 80, 120],
+                    "bb_windows": [20, 40, 80, 120],
+                    "hit_tolerance": 0.0015,
+                },
                 labels={"role": "features", "pack": "rich"},
             )
         )
@@ -191,7 +199,7 @@ class ChampionEdgeRecipe(Recipe):
                     target_tables=["target_return"],
                     fold_plans=["folds_outer"],
                     feature_include_regex=[
-                        r"^(ret_|vol_|mom_|down_vol_|up_vol_|ema_|trend_|breakout_|close_range_position_|rp_hour_|range_|dollar_|abs_ret_|regime_)"
+                        r"^(ret_|vol_|mom_|down_vol_|up_vol_|ema_|trend_|breakout_|close_range_position_|rp_hour_|range_|dollar_|abs_ret_|regime_|resistance_hit_|support_hit_|hit_asym_|pct_to_ema_|bb_|pct_to_resistance_|pct_to_support_|sr_distance_asym_)"
                     ],
                     max_features=80,
                     standardize_features=True,
@@ -257,7 +265,7 @@ class ChampionEdgeRecipe(Recipe):
                     target_tables=["target_direction"],
                     fold_plans=["folds_outer"],
                     feature_include_regex=[
-                        r"^(ret_|vol_|mom_|down_vol_|up_vol_|ema_|trend_|breakout_|close_range_position_|rp_hour_|range_|dollar_|abs_ret_|regime_)"
+                        r"^(ret_|vol_|mom_|down_vol_|up_vol_|ema_|trend_|breakout_|close_range_position_|rp_hour_|range_|dollar_|abs_ret_|regime_|resistance_hit_|support_hit_|hit_asym_|pct_to_ema_|bb_|pct_to_resistance_|pct_to_support_|sr_distance_asym_)"
                     ],
                     max_features=72,
                     standardize_features=True,
@@ -426,7 +434,7 @@ class ChampionEdgeRecipe(Recipe):
                     target_tables=["target_abs_err_kernel"],
                     fold_plans=["folds_outer"],
                     prediction_tables=["ret_kernel_rich", "ret_loess_base", "ret_ridge_stable"],
-                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_)"],
+                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_|resistance_hit_|support_hit_|hit_asym_|pct_to_ema_|bb_|pct_to_resistance_|pct_to_support_|sr_distance_asym_)"],
                     max_features=88,
                     standardize_features=True,
                     clip_quantiles=(0.01, 0.99),
@@ -450,7 +458,7 @@ class ChampionEdgeRecipe(Recipe):
                     target_tables=["target_abs_err_loess"],
                     fold_plans=["folds_outer"],
                     prediction_tables=["ret_kernel_rich", "ret_loess_base", "ret_ridge_stable"],
-                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_)"],
+                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_|resistance_hit_|support_hit_|hit_asym_|pct_to_ema_|bb_|pct_to_resistance_|pct_to_support_|sr_distance_asym_)"],
                     max_features=88,
                     standardize_features=True,
                     clip_quantiles=(0.01, 0.99),
@@ -474,7 +482,7 @@ class ChampionEdgeRecipe(Recipe):
                     target_tables=["target_signed_resid_kernel"],
                     fold_plans=["folds_outer"],
                     prediction_tables=["ret_kernel_rich", "ret_loess_base", "ret_ridge_stable"],
-                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_)"],
+                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_|resistance_hit_|support_hit_|hit_asym_|pct_to_ema_|bb_|pct_to_resistance_|pct_to_support_|sr_distance_asym_)"],
                     max_features=88,
                     standardize_features=True,
                     clip_quantiles=(0.01, 0.99),
@@ -498,7 +506,7 @@ class ChampionEdgeRecipe(Recipe):
                     target_tables=["target_disagreement_return"],
                     fold_plans=["folds_outer"],
                     prediction_tables=["ret_kernel_rich", "ret_loess_base", "ret_ridge_stable"],
-                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_)"],
+                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_|resistance_hit_|support_hit_|hit_asym_|pct_to_ema_|bb_|pct_to_resistance_|pct_to_support_|sr_distance_asym_)"],
                     max_features=88,
                     standardize_features=True,
                     clip_quantiles=(0.01, 0.99),
@@ -522,7 +530,7 @@ class ChampionEdgeRecipe(Recipe):
                     target_tables=["target_calibration_gap_dir"],
                     fold_plans=["folds_outer"],
                     prediction_tables=["dir_logistic_prob"],
-                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_)"],
+                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_|resistance_hit_|support_hit_|hit_asym_|pct_to_ema_|bb_|pct_to_resistance_|pct_to_support_|sr_distance_asym_)"],
                     max_features=72,
                     standardize_features=True,
                     clip_quantiles=(0.01, 0.99),
@@ -586,7 +594,7 @@ class ChampionEdgeRecipe(Recipe):
                     target_tables=["target_return"],
                     fold_plans=["folds_outer"],
                     feature_include_regex=[
-                        r"^(ret_|ret_z_|vol_|mom_|down_vol_|up_vol_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_pos_|close_range_position_|hour_|dow_|rp_hour_|regime_|proj_|pred_)"
+                        r"^(ret_|ret_z_|vol_|mom_|down_vol_|up_vol_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_pos_|close_range_position_|hour_|dow_|rp_hour_|regime_|proj_|pred_|resistance_hit_|support_hit_|hit_asym_|pct_to_ema_|bb_|pct_to_resistance_|pct_to_support_|sr_distance_asym_)"
                     ],
                     feature_exclude_regex=[r"^pred_calib_gap_forecaster$"],
                     max_features=120,
