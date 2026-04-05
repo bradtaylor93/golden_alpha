@@ -60,7 +60,7 @@ class ChampionEdgeRecipe(Recipe):
         default_factory=lambda: ModelSpec("ret_ridge_stable", "ridge", {"alpha": 1.25})
     )
     meta_model: ModelSpec = field(
-        default_factory=lambda: ModelSpec("champion_meta_return", "ridge", {"alpha": 2.2})
+        default_factory=lambda: ModelSpec("champion_meta_return", "ridge", {"alpha": 1.4})
     )
 
     def compile(self) -> WorkflowGraph:
@@ -132,6 +132,15 @@ class ChampionEdgeRecipe(Recipe):
                 labels={"role": "features", "pack": "regime"},
             )
         )
+        graph.add_node(
+            FeatureNode(
+                name="features_cross",
+                depends_on=("bars",),
+                family_name="cross_asset",
+                params={},
+                labels={"role": "features", "pack": "cross"},
+            )
+        )
 
         # Base alpha candidates (different inductive biases).
         graph.add_node(
@@ -145,6 +154,8 @@ class ChampionEdgeRecipe(Recipe):
                     feature_tables=["features_base"],
                     target_tables=["target_return"],
                     fold_plans=["folds_outer"],
+                    feature_include_regex=[r"^ret_20$"],
+                    max_features=1,
                 ),
             )
         )
@@ -159,6 +170,12 @@ class ChampionEdgeRecipe(Recipe):
                     feature_tables=["features_base", "features_regime"],
                     target_tables=["target_return"],
                     fold_plans=["folds_outer"],
+                    feature_include_regex=[
+                        r"^(ret_|ret_z_|vol_|range$|range_mean_|close_pos_|dollar_volume_z_|hour_|dow_|regime_)"
+                    ],
+                    max_features=56,
+                    standardize_features=True,
+                    clip_quantiles=(0.01, 0.99),
                 ),
             )
         )
@@ -173,6 +190,12 @@ class ChampionEdgeRecipe(Recipe):
                     feature_tables=["features_rich", "features_regime"],
                     target_tables=["target_return"],
                     fold_plans=["folds_outer"],
+                    feature_include_regex=[
+                        r"^(ret_|vol_|mom_|down_vol_|up_vol_|ema_|trend_|breakout_|close_range_position_|rp_hour_|range_|dollar_|abs_ret_|regime_)"
+                    ],
+                    max_features=80,
+                    standardize_features=True,
+                    clip_quantiles=(0.01, 0.99),
                 ),
             )
         )
@@ -187,6 +210,12 @@ class ChampionEdgeRecipe(Recipe):
                     feature_tables=["features_base", "features_regime"],
                     target_tables=["target_return"],
                     fold_plans=["folds_outer"],
+                    feature_include_regex=[
+                        r"^(ret_|ret_z_|vol_|range$|range_mean_|close_pos_|dollar_volume_z_|hour_|dow_|regime_)"
+                    ],
+                    max_features=64,
+                    standardize_features=True,
+                    clip_quantiles=(0.01, 0.99),
                 ),
             )
         )
@@ -203,6 +232,12 @@ class ChampionEdgeRecipe(Recipe):
                     feature_tables=["features_rich", "features_regime"],
                     target_tables=["target_volatility"],
                     fold_plans=["folds_outer"],
+                    feature_include_regex=[
+                        r"^(ret_|vol_|mom_|down_vol_|up_vol_|ema_|trend_|breakout_|close_range_position_|rp_hour_|range_|dollar_|abs_ret_|regime_)"
+                    ],
+                    max_features=80,
+                    standardize_features=True,
+                    clip_quantiles=(0.01, 0.99),
                 ),
             )
         )
@@ -221,6 +256,12 @@ class ChampionEdgeRecipe(Recipe):
                     feature_tables=["features_rich", "features_regime"],
                     target_tables=["target_direction"],
                     fold_plans=["folds_outer"],
+                    feature_include_regex=[
+                        r"^(ret_|vol_|mom_|down_vol_|up_vol_|ema_|trend_|breakout_|close_range_position_|rp_hour_|range_|dollar_|abs_ret_|regime_)"
+                    ],
+                    max_features=72,
+                    standardize_features=True,
+                    clip_quantiles=(0.01, 0.99),
                 ),
             )
         )
@@ -371,7 +412,12 @@ class ChampionEdgeRecipe(Recipe):
         graph.add_node(
             ModelNode(
                 name="err_kernel_abs",
-                depends_on=("features_rich", "proj_model_health", "target_abs_err_kernel", "folds_outer"),
+                depends_on=(
+                    "features_rich",
+                    "proj_model_health",
+                    "target_abs_err_kernel",
+                    "folds_outer",
+                ),
                 model_spec=ModelSpec("err_kernel_abs", "kernel_ridge", {"alpha": 0.55, "gamma": 0.1}),
                 training_recipe=TrainingRecipe(save_training_snapshot=True),
                 labels={"role": "error_model"},
@@ -380,13 +426,22 @@ class ChampionEdgeRecipe(Recipe):
                     target_tables=["target_abs_err_kernel"],
                     fold_plans=["folds_outer"],
                     prediction_tables=["ret_kernel_rich", "ret_loess_base", "ret_ridge_stable"],
+                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_)"],
+                    max_features=88,
+                    standardize_features=True,
+                    clip_quantiles=(0.01, 0.99),
                 ),
             )
         )
         graph.add_node(
             ModelNode(
                 name="err_loess_abs",
-                depends_on=("features_rich", "proj_model_health", "target_abs_err_loess", "folds_outer"),
+                depends_on=(
+                    "features_rich",
+                    "proj_model_health",
+                    "target_abs_err_loess",
+                    "folds_outer",
+                ),
                 model_spec=ModelSpec("err_loess_abs", "ridge", {"alpha": 0.9}),
                 training_recipe=TrainingRecipe(save_training_snapshot=True),
                 labels={"role": "error_model"},
@@ -395,13 +450,22 @@ class ChampionEdgeRecipe(Recipe):
                     target_tables=["target_abs_err_loess"],
                     fold_plans=["folds_outer"],
                     prediction_tables=["ret_kernel_rich", "ret_loess_base", "ret_ridge_stable"],
+                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_)"],
+                    max_features=88,
+                    standardize_features=True,
+                    clip_quantiles=(0.01, 0.99),
                 ),
             )
         )
         graph.add_node(
             ModelNode(
                 name="signed_resid_kernel_model",
-                depends_on=("features_rich", "proj_model_health", "target_signed_resid_kernel", "folds_outer"),
+                depends_on=(
+                    "features_rich",
+                    "proj_model_health",
+                    "target_signed_resid_kernel",
+                    "folds_outer",
+                ),
                 model_spec=ModelSpec("signed_resid_kernel_model", "ridge", {"alpha": 1.5}),
                 training_recipe=TrainingRecipe(save_training_snapshot=True),
                 labels={"role": "error_model"},
@@ -410,13 +474,22 @@ class ChampionEdgeRecipe(Recipe):
                     target_tables=["target_signed_resid_kernel"],
                     fold_plans=["folds_outer"],
                     prediction_tables=["ret_kernel_rich", "ret_loess_base", "ret_ridge_stable"],
+                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_)"],
+                    max_features=88,
+                    standardize_features=True,
+                    clip_quantiles=(0.01, 0.99),
                 ),
             )
         )
         graph.add_node(
             ModelNode(
                 name="disagreement_forecaster",
-                depends_on=("features_rich", "proj_model_health", "target_disagreement_return", "folds_outer"),
+                depends_on=(
+                    "features_rich",
+                    "proj_model_health",
+                    "target_disagreement_return",
+                    "folds_outer",
+                ),
                 model_spec=ModelSpec("disagreement_forecaster", "ridge", {"alpha": 0.7}),
                 training_recipe=TrainingRecipe(save_training_snapshot=True),
                 labels={"role": "error_model"},
@@ -425,13 +498,22 @@ class ChampionEdgeRecipe(Recipe):
                     target_tables=["target_disagreement_return"],
                     fold_plans=["folds_outer"],
                     prediction_tables=["ret_kernel_rich", "ret_loess_base", "ret_ridge_stable"],
+                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_)"],
+                    max_features=88,
+                    standardize_features=True,
+                    clip_quantiles=(0.01, 0.99),
                 ),
             )
         )
         graph.add_node(
             ModelNode(
                 name="calib_gap_forecaster",
-                depends_on=("features_rich", "proj_model_health", "target_calibration_gap_dir", "folds_outer"),
+                depends_on=(
+                    "features_rich",
+                    "proj_model_health",
+                    "target_calibration_gap_dir",
+                    "folds_outer",
+                ),
                 model_spec=ModelSpec("calib_gap_forecaster", "ridge", {"alpha": 0.6}),
                 training_recipe=TrainingRecipe(save_training_snapshot=True),
                 labels={"role": "error_model"},
@@ -440,6 +522,10 @@ class ChampionEdgeRecipe(Recipe):
                     target_tables=["target_calibration_gap_dir"],
                     fold_plans=["folds_outer"],
                     prediction_tables=["dir_logistic_prob"],
+                    feature_include_regex=[r"^(ret_|vol_|mom_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_range_position_|rp_hour_|proj_|pred_)"],
+                    max_features=72,
+                    standardize_features=True,
+                    clip_quantiles=(0.01, 0.99),
                 ),
             )
         )
@@ -450,6 +536,7 @@ class ChampionEdgeRecipe(Recipe):
                 name="champion_meta_return",
                 depends_on=(
                     "features_rich",
+                    "features_base",
                     "features_regime",
                     "proj_model_health",
                     "ret_loess_base",
@@ -459,10 +546,7 @@ class ChampionEdgeRecipe(Recipe):
                     "vol_kernel_risk",
                     "dir_logistic_prob",
                     "err_kernel_abs",
-                    "err_loess_abs",
-                    "signed_resid_kernel_model",
                     "disagreement_forecaster",
-                    "calib_gap_forecaster",
                     "diag_ret_loess",
                     "diag_ret_kernel",
                     "diag_ret_ridge",
@@ -473,20 +557,13 @@ class ChampionEdgeRecipe(Recipe):
                 model_spec=self.meta_model,
                 training_recipe=TrainingRecipe(save_training_snapshot=True),
                 labels={"task_family": "return", "role": "champion_meta"},
-                training_overrides={
-                    "max_prediction_inputs": 6,
-                    "prediction_priority_order": [
-                        "ret_ridge_stable",
-                        "ret_kernel_rich",
-                        "ret_loess_base",
-                        "ret_persistence_baseline",
-                        "err_kernel_abs",
-                        "disagreement_forecaster",
-                    ],
-                    "clip_abs_zscore": 6.0,
-                },
                 inputs=ModelInputs(
-                    feature_tables=["features_rich", "features_regime", "proj_model_health"],
+                    feature_tables=[
+                        "features_base",
+                        "features_rich",
+                        "features_regime",
+                        "proj_model_health",
+                    ],
                     prediction_tables=[
                         "ret_loess_base",
                         "ret_kernel_rich",
@@ -508,6 +585,13 @@ class ChampionEdgeRecipe(Recipe):
                     ],
                     target_tables=["target_return"],
                     fold_plans=["folds_outer"],
+                    feature_include_regex=[
+                        r"^(ret_|ret_z_|vol_|mom_|down_vol_|up_vol_|ema_|range_|dollar_|abs_ret_|trend_|breakout_|close_pos_|close_range_position_|hour_|dow_|rp_hour_|regime_|proj_|pred_)"
+                    ],
+                    feature_exclude_regex=[r"^pred_calib_gap_forecaster$"],
+                    max_features=120,
+                    standardize_features=True,
+                    clip_quantiles=(0.01, 0.99),
                 ),
             )
         )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from pathlib import Path
+import re
 from typing import Any
 
 import pandas as pd
@@ -614,12 +615,25 @@ class WorkflowRunner:
     ) -> list[str]:
         cols = [c for c in merged.columns if c not in {"timestamp", "asset", "target"}]
         selected = cols
-        if model_node.inputs.feature_include_regex:
-            regex = model_node.inputs.feature_include_regex
-            selected = [c for c in selected if re.search(regex, c)]
-        if model_node.inputs.feature_exclude_regex:
-            regex = model_node.inputs.feature_exclude_regex
-            selected = [c for c in selected if not re.search(regex, c)]
+        include_patterns = model_node.inputs.feature_include_regex
+        exclude_patterns = model_node.inputs.feature_exclude_regex
+        include_patterns = (
+            [include_patterns] if isinstance(include_patterns, str) else list(include_patterns)
+        )
+        exclude_patterns = (
+            [exclude_patterns] if isinstance(exclude_patterns, str) else list(exclude_patterns)
+        )
+        include_patterns = [p for p in include_patterns if p]
+        exclude_patterns = [p for p in exclude_patterns if p]
+
+        if include_patterns:
+            selected = [
+                c for c in selected if any(re.search(pattern, c) for pattern in include_patterns)
+            ]
+        if exclude_patterns:
+            selected = [
+                c for c in selected if not any(re.search(pattern, c) for pattern in exclude_patterns)
+            ]
         if model_node.inputs.max_features is not None:
             selected = selected[: max(1, int(model_node.inputs.max_features))]
         return selected
