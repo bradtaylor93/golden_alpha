@@ -27,6 +27,16 @@ class DiagnosticInputs:
     target_tables: list[str] = field(default_factory=list)
     feature_tables: list[str] = field(default_factory=list)
     model_state_tables: list[str] = field(default_factory=list)
+    fold_plans: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DerivedTargetInputs:
+    bars: list[str] = field(default_factory=list)
+    fold_plans: list[str] = field(default_factory=list)
+    prediction_tables: list[str] = field(default_factory=list)
+    target_tables: list[str] = field(default_factory=list)
+    diagnostic_tables: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -39,8 +49,10 @@ class DerivedFeatureInputs:
 @dataclass(frozen=True)
 class ProjectionInputs:
     bars: list[str] = field(default_factory=list)
+    fold_plans: list[str] = field(default_factory=list)
     diagnostic_tables: list[str] = field(default_factory=list)
     lag: int = 1
+    mode: str = "prev_fold_to_test"
 
 
 @dataclass(frozen=True)
@@ -54,6 +66,7 @@ class SelectionInputs:
 class WorkflowNode:
     name: str
     depends_on: tuple[str, ...] = field(default_factory=tuple)
+    labels: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -120,6 +133,14 @@ class DiagnosticNode(WorkflowNode):
 
 
 @dataclass(frozen=True)
+class DerivedTargetNode(WorkflowNode):
+    task_name: str = "derived_abs_error"
+    target_kind: str = "abs_error"
+    source_prediction_node: str | None = None
+    inputs: DerivedTargetInputs = field(default_factory=DerivedTargetInputs)
+
+
+@dataclass(frozen=True)
 class DerivedFeatureNode(WorkflowNode):
     derived_expressions: list[str] = field(default_factory=list)
     feature_name: str = "residual_std_by_asset"
@@ -141,5 +162,6 @@ class SelectionNode(WorkflowNode):
 
 # Aliases used by the runner interface.
 DiagnosticNodeInputs = DiagnosticInputs
+DerivedTargetNodeInputs = DerivedTargetInputs
 ProjectionNodeInputs = ProjectionInputs
 SelectionNodeInputs = SelectionInputs

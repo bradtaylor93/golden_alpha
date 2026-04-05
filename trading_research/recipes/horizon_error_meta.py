@@ -3,19 +3,30 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
+
+import pandas as pd
 
 from trading_research.models.registry import ModelSpec, TrainingRecipe
 from trading_research.recipes.base import Recipe
 from trading_research.validation.splits import ValidationSpec
 from trading_research.workflow.graph import WorkflowGraph
+from trading_research.workflow.inspectors import load_run
 from trading_research.workflow.nodes import (
     DataNode,
+    DerivedTargetInputs,
+    DerivedTargetNode,
+    DiagnosticInputs,
+    DiagnosticNode,
     FeatureNode,
     FoldPlanNode,
     ModelInputs,
     ModelNode,
+    ProjectionInputs,
+    ProjectionNode,
     TargetNode,
 )
+from trading_research.workflow.runner import WorkflowRunner
 
 
 @dataclass(frozen=True)
@@ -190,6 +201,40 @@ class HorizonErrorMetaRecipe(Recipe):
                     ),
                 )
             )
+            graph.add_node(
+                DiagnosticNode(
+                    name=f"diag_ret_rich_{horizon}",
+                    depends_on=(f"ret_rich_{horizon}",),
+                    diagnostic_types=["train_test_deviance_gap", "feature_drift", "residual_std_by_asset"],
+                    labels={"task_family": "return", "horizon": horizon, "role": "base_diagnostic"},
+                    inputs=DiagnosticInputs(prediction_tables=[f"ret_rich_{horizon}"]),
+                )
+            )
+            graph.add_node(
+                ProjectionNode(
+                    name=f"proj_ret_rich_{horizon}",
+                    depends_on=("bars", f"diag_ret_rich_{horizon}"),
+                    labels={"task_family": "return", "horizon": horizon, "role": "diagnostic_projection"},
+                    inputs=ProjectionInputs(
+                        bars=["bars"],
+                        fold_plans=["folds_outer"],
+                        diagnostic_tables=[f"diag_ret_rich_{horizon}"],
+                        lag=1,
+                        mode="prev_fold_to_test",
+                    ),
+                )
+            )
+            graph.add_node(
+                DerivedTargetNode(
+                    name=f"derived_abs_error_ret_rich_{horizon}",
+                    depends_on=(f"ret_rich_{horizon}",),
+                    task_name=f"derived_abs_error_ret_{horizon}",
+                    inputs=DerivedTargetInputs(prediction_tables=[f"ret_rich_{horizon}"]),
+                    target_kind="abs_error",
+                    source_prediction_node=f"ret_rich_{horizon}",
+                    labels={"task_family": "return", "horizon": horizon, "role": "derived_target"},
+                )
+            )
 
             # Candidate models for volatility.
             graph.add_node(
@@ -240,9 +285,10 @@ class HorizonErrorMetaRecipe(Recipe):
                     name=f"err_meta_ret_{horizon}",
                     depends_on=(
                         "features_rich",
+                        f"proj_ret_rich_{horizon}",
                         f"ret_low_s_{horizon}",
                         f"ret_rich_{horizon}",
-                        f"target_ret_{horizon}",
+                        f"derived_abs_error_ret_rich_{horizon}",
                         "folds_outer",
                     ),
                     model_spec=ModelSpec(
@@ -252,9 +298,9 @@ class HorizonErrorMetaRecipe(Recipe):
                     ),
                     training_recipe=TrainingRecipe(save_training_snapshot=True),
                     inputs=ModelInputs(
-                        feature_tables=["features_rich"],
+                        feature_tables=["features_rich", f"proj_ret_rich_{horizon}"],
                         prediction_tables=[f"ret_low_s_{horizon}", f"ret_rich_{horizon}"],
-                        target_tables=[f"target_ret_{horizon}"],
+                        target_tables=[f"derived_abs_error_ret_rich_{horizon}"],
                         fold_plans=["folds_outer"],
                     ),
                 )
@@ -302,6 +348,28 @@ def _infer_horizon_from_node(node_name: str) -> int | None:
     return None
 
 
+def _artifact_horizon_and_family(ref) -> tuple[int | None, str]:
+    """Prefer structured artifact metadata over node-name parsing."""
+    metadata = ref.metadata if isinstance(getattr(ref, "metadata", None), dict) else {}
+    labels = metadata.get("node_labels", {}) if isinstance(metadata.get("node_labels", {}), dict) else {}
+    horizon = labels.get("horizon")
+    if isinstance(horizon, bool):
+        horizon = None
+    if horizon is not None:
+        try:
+            horizon = int(horizon)
+        except Exception:
+            horizon = None
+    task_family = labels.get("task_family")
+    if not isinstance(task_family, str):
+        task_family = ""
+    if horizon is None:
+        horizon = _infer_horizon_from_node(ref.node_name)
+    if not task_family:
+        task_family = "return" if "_ret_" in ref.node_name or "ret_" in ref.node_name else "volatility"
+    return horizon, task_family
+
+
 def run_horizon_error_meta(
     *,
     recipe: HorizonErrorMetaRecipe,
@@ -327,8 +395,7 @@ def run_horizon_error_meta(
             continue
         frame = frame.copy()
         frame["node_name"] = ref.node_name
-        horizon = _infer_horizon_from_node(ref.node_name)
-        task = "return" if "_ret_" in ref.node_name or "ret_" in ref.node_name else "volatility"
+        horizon, task = _artifact_horizon_and_family(ref)
         frame["horizon"] = horizon
         frame["task_family"] = task
         pred_frames.append(frame)

@@ -42,6 +42,8 @@ from trading_research.workflow.graph import WorkflowGraph
 from trading_research.workflow.manifest import RunManifest, generate_run_id
 from trading_research.workflow.nodes import (
     DataNode,
+    DerivedTargetInputs,
+    DerivedTargetNode,
     DerivedFeatureInputs,
     DerivedFeatureNode,
     DiagnosticInputs,
@@ -163,21 +165,118 @@ class WorkflowRunner:
         schema: dict[str, Any],
         metadata: dict[str, Any],
         upstream_refs: list[ArtifactRef],
+        node_type: str | None = None,
         suffix: str = "",
     ) -> ArtifactRef:
+        full_meta = dict(metadata)
+        if node_type is not None:
+            full_meta["node_type"] = node_type
         ref = store.write(
             artifact_type=artifact_type,
             node_name=node_name,
             scope=scope,
             data=data,
             schema=schema,
-            metadata=metadata,
+            metadata=full_meta,
             upstream_ids=[u.artifact_id for u in upstream_refs],
             suffix=suffix,
         )
         index.add(ref)
         produced.setdefault(node_name, []).append(ref)
         return ref
+
+    @staticmethod
+    def _common_meta(node: WorkflowNode) -> dict[str, Any]:
+        """Structured metadata to avoid downstream string parsing."""
+        return {
+            "node_type": node.__class__.__name__,
+            "node_labels": dict(node.labels),
+        }
+
+    @staticmethod
+    def _diag_metric(
+        diagnostic_type: str,
+        *,
+        pred_fold: pd.DataFrame,
+        pred_all: pd.DataFrame,
+        feature_frame: pd.DataFrame | None,
+    ) -> float:
+        train = pred_fold[pred_fold["split_role"] == "train"]
+        test = pred_fold[pred_fold["split_role"] == "test"]
+        if diagnostic_type == "train_test_deviance_gap":
+            if train.empty or test.empty:
+                return float("nan")
+            return train_test_deviance_gap(
+                train["target"].to_numpy(dtype=float),
+                train["prediction"].to_numpy(dtype=float),
+                test["target"].to_numpy(dtype=float),
+                test["prediction"].to_numpy(dtype=float),
+            )
+        if diagnostic_type == "residual_std_by_asset":
+            if test.empty:
+                return 0.0
+            rs = residual_std_by_asset(test)
+            return float(rs["residual_std_by_asset"].mean()) if not rs.empty else 0.0
+        if diagnostic_type == "calibration_gap":
+            if test.empty:
+                return 0.0
+            return calibration_gap(
+                test["target"].to_numpy(dtype=float),
+                test["prediction"].to_numpy(dtype=float),
+            )
+        if diagnostic_type == "feature_drift":
+            if feature_frame is None or test.empty:
+                return 0.0
+            merged = (
+                test[["timestamp", "asset"]]
+                .merge(feature_frame, on=["timestamp", "asset"], how="left")
+                .drop(columns=["timestamp", "asset"], errors="ignore")
+            )
+            if merged.empty:
+                return 0.0
+            split = max(1, int(len(merged) * 0.7))
+            left = merged.iloc[:split]
+            right = merged.iloc[split:]
+            cols = [c for c in merged.columns if pd.api.types.is_numeric_dtype(merged[c])]
+            if left.empty or right.empty or not cols:
+                return 0.0
+            return float(feature_drift_summary(left[cols], right[cols], cols)["mean_std_shift"])
+        raise ValueError(f"Unsupported diagnostic type: {diagnostic_type}")
+
+    @staticmethod
+    def _project_diagnostics(
+        *,
+        bars: pd.DataFrame,
+        folds: pd.DataFrame,
+        diagnostics: pd.DataFrame,
+        lag: int,
+    ) -> pd.DataFrame:
+        out = bars[["timestamp", "asset"]].reset_index(drop=True).copy()
+        for col in diagnostics.columns:
+            if col == "outer_fold_id" or not pd.api.types.is_numeric_dtype(diagnostics[col]):
+                continue
+            out[f"proj_{col}"] = 0.0
+        if diagnostics.empty or folds.empty:
+            return out
+        for _, fold_row in folds.iterrows():
+            fold_id = int(fold_row["outer_fold_id"])
+            prev_id = fold_id - lag
+            prev_diag = diagnostics[diagnostics["outer_fold_id"] == prev_id]
+            if prev_diag.empty:
+                continue
+            # project onto this fold's test interval only; keeps causality explicit.
+            ts = int(fold_row["test_start_idx"])
+            te = int(fold_row["test_end_idx"])
+            if ts >= len(out):
+                continue
+            te = min(te, len(out) - 1)
+            for col in diagnostics.columns:
+                if col == "outer_fold_id" or not pd.api.types.is_numeric_dtype(diagnostics[col]):
+                    continue
+                out_col = f"proj_{col}"
+                val = float(pd.to_numeric(prev_diag[col], errors="coerce").fillna(0.0).mean())
+                out.loc[ts:te, out_col] = val
+        return out
 
     def _execute_node(
         self,
@@ -192,6 +291,9 @@ class WorkflowRunner:
             return
         if isinstance(node, TargetNode):
             self._run_target_node(node=node, store=store, index=index, produced=produced)
+            return
+        if isinstance(node, DerivedTargetNode):
+            self._run_derived_target_node(node=node, store=store, index=index, produced=produced)
             return
         if isinstance(node, FoldPlanNode):
             self._run_fold_plan_node(node=node, store=store, index=index, produced=produced)
@@ -234,7 +336,11 @@ class WorkflowRunner:
             data=bars,
             scope=ArtifactScope(cv_level="global", split_role="full"),
             schema={"columns": list(bars.columns)},
-            metadata={"dataset_name": node.dataset_name, "universe": list(node.universe)},
+            metadata={
+                "dataset_name": node.dataset_name,
+                "universe": list(node.universe),
+                **self._common_meta(node),
+            },
             upstream_refs=[],
         )
 
@@ -259,8 +365,88 @@ class WorkflowRunner:
             data=targets,
             scope=ArtifactScope(cv_level="global", split_role="full"),
             schema={"columns": list(targets.columns)},
-            metadata={"task": task.name, "horizon": task.horizon, "task_type": task.task_type},
+            metadata={
+                "task": task.name,
+                "horizon": task.horizon,
+                "task_type": task.task_type,
+                **self._common_meta(node),
+            },
             upstream_refs=[bars_ref],
+        )
+
+    def _run_derived_target_node(
+        self,
+        *,
+        node: DerivedTargetNode,
+        store: ArtifactStore,
+        index: ArtifactIndex,
+        produced: dict[str, list[ArtifactRef]],
+    ) -> None:
+        inputs: DerivedTargetInputs = node.inputs
+        pred_refs = (
+            self._resolve_refs(inputs.prediction_tables, produced, artifact_type="PredictionArtifact")
+            if inputs.prediction_tables
+            else []
+        )
+        diag_refs = (
+            self._resolve_refs(inputs.diagnostic_tables, produced, artifact_type="DiagnosticArtifact")
+            if inputs.diagnostic_tables
+            else []
+        )
+        if not pred_refs:
+            raise ValueError("DerivedTargetNode requires at least one prediction table input.")
+        pred = store.load(pred_refs[0].artifact_id)
+        if not {"target", "prediction", "timestamp", "asset"}.issubset(pred.columns):
+            raise ValueError("PredictionArtifact must contain timestamp/asset/target/prediction columns.")
+
+        out = pred[["timestamp", "asset"]].copy()
+        out["task_name"] = node.task_name
+        target_kind = node.target_kind
+        if target_kind == "abs_error":
+            out["target"] = (pred["target"] - pred["prediction"]).abs()
+        elif target_kind == "signed_residual":
+            out["target"] = pred["target"] - pred["prediction"]
+        elif target_kind == "disagreement":
+            if len(pred_refs) < 2:
+                raise ValueError("disagreement target requires >=2 prediction tables.")
+            merged = out.copy()
+            pred_cols: list[str] = []
+            for i, ref in enumerate(pred_refs):
+                frame = store.load(ref.artifact_id)[["timestamp", "asset", "prediction"]].rename(
+                    columns={"prediction": f"pred_{i}"}
+                )
+                pred_col = f"pred_{i}"
+                pred_cols.append(pred_col)
+                merged = merged.merge(frame, on=["timestamp", "asset"], how="left")
+            out["target"] = merged[pred_cols].std(axis=1).fillna(0.0)
+        elif target_kind == "calibration_gap":
+            val = 0.0
+            if diag_refs:
+                diag = pd.concat([store.load(r.artifact_id) for r in diag_refs], ignore_index=True)
+                if "calibration_gap" in diag.columns:
+                    val = float(pd.to_numeric(diag["calibration_gap"], errors="coerce").fillna(0.0).mean())
+            out["target"] = val
+        else:
+            raise ValueError(f"Unsupported derived target kind: {target_kind}")
+
+        out = out.dropna().reset_index(drop=True)
+        self._write_artifact(
+            store=store,
+            index=index,
+            produced=produced,
+            node_name=node.name,
+            artifact_type="TargetTableArtifact",
+            data=out,
+            scope=ArtifactScope(cv_level="outer_fold", split_role="validation"),
+            schema={"columns": list(out.columns)},
+            metadata={
+                "task": node.task_name,
+                "task_type": "regression",
+                "derived_target_kind": node.target_kind,
+                "source_prediction_node": node.source_prediction_node,
+                **self._common_meta(node),
+            },
+            upstream_refs=pred_refs + diag_refs,
         )
 
     def _run_fold_plan_node(
@@ -291,7 +477,11 @@ class WorkflowRunner:
             data=folds,
             scope=ArtifactScope(cv_level="global", split_role="validation"),
             schema={"columns": list(folds.columns)},
-            metadata={"validation": asdict(node.validation), "level": node.level},
+            metadata={
+                "validation": asdict(node.validation),
+                "level": node.level,
+                **self._common_meta(node),
+            },
             upstream_refs=[bars_ref],
         )
 
@@ -318,7 +508,11 @@ class WorkflowRunner:
             data=features,
             scope=ArtifactScope(cv_level="global", split_role="full"),
             schema={"columns": list(features.columns), "family": node.family_name},
-            metadata={"family_name": node.family_name, "params": node.params},
+            metadata={
+                "family_name": node.family_name,
+                "params": node.params,
+                **self._common_meta(node),
+            },
             upstream_refs=[bars_ref],
         )
 
@@ -530,8 +724,17 @@ class WorkflowRunner:
             )
 
         task_name = str(targets["task_name"].iloc[0]) if "task_name" in targets.columns else ""
-        task = self.task_registry.get(task_name) if task_name else None
-        model_kind = "classification" if task and task.task_type == "classification" else "regression"
+        task_type_from_meta = str(target_ref.metadata.get("task_type", "")).lower()
+        if task_type_from_meta in {"classification", "regression"}:
+            model_kind = task_type_from_meta
+        else:
+            task = None
+            if task_name:
+                try:
+                    task = self.task_registry.get(task_name)
+                except KeyError:
+                    task = None
+            model_kind = "classification" if task and task.task_type == "classification" else "regression"
 
         all_pred: list[pd.DataFrame] = []
         all_diag: list[pd.DataFrame] = []
@@ -590,7 +793,11 @@ class WorkflowRunner:
             data=pred_df,
             scope=ArtifactScope(cv_level="outer_fold", split_role="oof"),
             schema={"columns": list(pred_df.columns)},
-            metadata={"model_name": node.model_spec.name, "algorithm": node.model_spec.algorithm},
+            metadata={
+                "model_name": node.model_spec.name,
+                "algorithm": node.model_spec.algorithm,
+                **self._common_meta(node),
+            },
             upstream_refs=upstream,
         )
         self._write_artifact(
@@ -602,7 +809,11 @@ class WorkflowRunner:
             data=state_df,
             scope=ArtifactScope(cv_level="outer_fold", split_role="train"),
             schema={"columns": list(state_df.columns)},
-            metadata={"model_name": node.model_spec.name, "algorithm": node.model_spec.algorithm},
+            metadata={
+                "model_name": node.model_spec.name,
+                "algorithm": node.model_spec.algorithm,
+                **self._common_meta(node),
+            },
             upstream_refs=upstream,
             suffix="state",
         )
@@ -615,7 +826,10 @@ class WorkflowRunner:
             data=diag_df,
             scope=ArtifactScope(cv_level="outer_fold", split_role="validation"),
             schema={"columns": list(diag_df.columns)},
-            metadata={"source_model": node.model_spec.name},
+            metadata={
+                "source_model": node.model_spec.name,
+                **self._common_meta(node),
+            },
             upstream_refs=[pred_ref],
             suffix="diag",
         )
@@ -630,7 +844,10 @@ class WorkflowRunner:
                 data=snap_df,
                 scope=ArtifactScope(cv_level="outer_fold", split_role="train"),
                 schema={"columns": list(snap_df.columns)},
-                metadata={"source_model": node.model_spec.name},
+                metadata={
+                    "source_model": node.model_spec.name,
+                    **self._common_meta(node),
+                },
                 upstream_refs=upstream,
                 suffix="snapshot",
             )
@@ -669,26 +886,15 @@ class WorkflowRunner:
         rows: list[dict[str, float]] = []
         if pred_refs:
             pred = store.load(pred_refs[0].artifact_id)
-            for _, fold_df in pred.groupby("outer_fold_id", observed=True):
-                train = fold_df[fold_df["split_role"] == "train"]
-                test = fold_df[fold_df["split_role"] == "test"]
-                row: dict[str, float] = {"outer_fold_id": float(fold_df["outer_fold_id"].iloc[0])}
-                if "train_test_deviance_gap" in node.diagnostic_types:
-                    row["train_test_deviance_gap"] = train_test_deviance_gap(
-                        train["target"].to_numpy(dtype=float),
-                        train["prediction"].to_numpy(dtype=float),
-                        test["target"].to_numpy(dtype=float),
-                        test["prediction"].to_numpy(dtype=float),
-                    )
-                if "residual_std_by_asset" in node.diagnostic_types:
-                    rs = residual_std_by_asset(test)
-                    row["residual_std_by_asset"] = (
-                        float(rs["residual_std_by_asset"].mean()) if not rs.empty else 0.0
-                    )
-                if "calibration_gap" in node.diagnostic_types and not test.empty:
-                    row["calibration_gap"] = calibration_gap(
-                        test["target"].to_numpy(dtype=float),
-                        test["prediction"].to_numpy(dtype=float),
+            feature_frame = store.load(feature_refs[0].artifact_id) if feature_refs else None
+            for fold_id, fold_df in pred.groupby("outer_fold_id", observed=True):
+                row: dict[str, float] = {"outer_fold_id": float(fold_id)}
+                for diagnostic_type in node.diagnostic_types:
+                    row[diagnostic_type] = self._diag_metric(
+                        diagnostic_type,
+                        pred_fold=fold_df,
+                        pred_all=pred,
+                        feature_frame=feature_frame,
                     )
                 rows.append(row)
 
@@ -702,7 +908,10 @@ class WorkflowRunner:
             data=out,
             scope=ArtifactScope(cv_level="outer_fold", split_role="validation"),
             schema={"columns": list(out.columns)},
-            metadata={"diagnostic_types": node.diagnostic_types},
+            metadata={
+                "diagnostic_types": list(node.diagnostic_types),
+                **self._common_meta(node),
+            },
             upstream_refs=upstream,
         )
 
@@ -751,7 +960,10 @@ class WorkflowRunner:
             data=out,
             scope=ArtifactScope(cv_level="outer_fold", split_role="validation"),
             schema={"columns": list(out.columns)},
-            metadata={"derived_expressions": node.derived_expressions},
+            metadata={
+                "derived_expressions": node.derived_expressions,
+                **self._common_meta(node),
+            },
             upstream_refs=upstream,
         )
 
@@ -766,16 +978,25 @@ class WorkflowRunner:
         inputs: ProjectionInputs = node.inputs
         bars_ref = self._resolve_refs(inputs.bars, produced, artifact_type="BarsArtifact")[0]
         diag_refs = self._resolve_refs(inputs.diagnostic_tables, produced, artifact_type="DiagnosticArtifact")
-        bars = store.load(bars_ref.artifact_id)[["timestamp", "asset"]].copy()
+        fold_refs = (
+            self._resolve_refs(inputs.fold_plans, produced, artifact_type="FoldPlanArtifact")
+            if inputs.fold_plans
+            else []
+        )
+        bars = store.load(bars_ref.artifact_id)
         diag = pd.concat([store.load(r.artifact_id) for r in diag_refs], ignore_index=True)
+        folds = store.load(fold_refs[0].artifact_id) if fold_refs else pd.DataFrame()
 
-        out = bars.copy()
-        for col in diag.columns:
-            if col == "outer_fold_id" or not pd.api.types.is_numeric_dtype(diag[col]):
-                continue
-            fname = f"proj_{col}"
-            out[fname] = float(diag[col].mean())
-            out[fname] = out.groupby("asset", observed=True)[fname].shift(inputs.lag).fillna(0.0)
+        if inputs.mode == "prev_fold_to_test" and not folds.empty and "outer_fold_id" in diag.columns:
+            out = self._project_diagnostics(bars=bars, folds=folds, diagnostics=diag, lag=inputs.lag)
+        else:
+            out = bars[["timestamp", "asset"]].copy()
+            for col in diag.columns:
+                if col == "outer_fold_id" or not pd.api.types.is_numeric_dtype(diag[col]):
+                    continue
+                fname = f"proj_{col}"
+                out[fname] = float(pd.to_numeric(diag[col], errors="coerce").fillna(0.0).mean())
+                out[fname] = out.groupby("asset", observed=True)[fname].shift(inputs.lag).fillna(0.0)
 
         self._write_artifact(
             store=store,
@@ -786,8 +1007,12 @@ class WorkflowRunner:
             data=out,
             scope=ArtifactScope(cv_level="outer_fold", split_role="validation"),
             schema={"columns": list(out.columns)},
-            metadata={"lag": inputs.lag},
-            upstream_refs=[bars_ref, *diag_refs],
+            metadata={
+                "lag": inputs.lag,
+                "mode": inputs.mode,
+                **self._common_meta(node),
+            },
+            upstream_refs=[bars_ref, *diag_refs, *fold_refs],
         )
 
     def _run_selection_node(
@@ -834,7 +1059,7 @@ class WorkflowRunner:
             data=out,
             scope=ArtifactScope(cv_level="outer_fold", split_role="validation"),
             schema={"columns": list(out.columns)},
-            metadata={"strategy": node.strategy_name},
+            metadata={"strategy": node.strategy_name, **self._common_meta(node)},
             upstream_refs=pred_refs,
         )
 
