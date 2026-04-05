@@ -10,6 +10,7 @@ import pandas as pd
 
 from trading_research.data.catalog import DataCatalog
 from trading_research.data.vendors.yahoo import YahooMarketDataVendor
+from trading_research.features import default_feature_registry
 from trading_research.recipes.champion_edge import ChampionEdgeRecipe
 from trading_research.workflow.inspectors import load_run
 from trading_research.workflow.runner import WorkflowRunner
@@ -44,16 +45,41 @@ def _oos_metrics(pred: pd.DataFrame, *, asset: str | None = None) -> dict[str, f
     }
 
 
-def _collect_metrics(run_id: str, runs_root: Path, *, asset: str | None = None) -> tuple[pd.DataFrame, str]:
+def _collect_metrics(
+    run_id: str,
+    runs_root: Path,
+    *,
+    asset: str | None = None,
+    include_per_asset: bool = False,
+) -> tuple[pd.DataFrame, str, pd.DataFrame]:
     inspector = load_run(run_id, runs_root)
     rows: list[dict[str, Any]] = []
+    per_asset_rows: list[dict[str, Any]] = []
     for node in CANDIDATE_NODES:
         frame = inspector.load_predictions(node)
         rows.append({"node_name": node, **_oos_metrics(frame, asset=asset)})
+        if include_per_asset:
+            test = frame[frame["split_role"] == "test"].copy()
+            test["target"] = pd.to_numeric(test["target"], errors="coerce")
+            test["prediction"] = pd.to_numeric(test["prediction"], errors="coerce")
+            test = test.dropna(subset=["target", "prediction", "asset"])
+            for asset_name, part in test.groupby("asset", observed=True):
+                err = part["target"] - part["prediction"]
+                per_asset_rows.append(
+                    {
+                        "node_name": node,
+                        "asset": str(asset_name),
+                        "n_test": int(len(part)),
+                        "mae": float(err.abs().mean()),
+                        "rmse": float((err.pow(2).mean()) ** 0.5),
+                        "pearson_corr": float(part["target"].corr(part["prediction"], method="pearson")),
+                    }
+                )
     selector = inspector.load_artifact("champion_selector", artifact_type="SelectionArtifact")
     chosen = str(selector["chosen_node_name"].iloc[0]) if not selector.empty else "n/a"
     out = pd.DataFrame(rows).sort_values("rmse", ascending=True).reset_index(drop=True)
-    return out, chosen
+    per_asset = pd.DataFrame(per_asset_rows)
+    return out, chosen, per_asset
 
 
 def _run_recipe(
@@ -63,7 +89,9 @@ def _run_recipe(
     runs_root: Path,
     tag: str,
 ) -> str:
-    runner = WorkflowRunner(runs_dir=runs_root, data_catalog=catalog)
+    # Isolate feature cache per experiment tag to avoid cross-dataset cache collisions.
+    feature_registry = default_feature_registry(cache_dir=runs_root / f"_feature_cache_{tag}")
+    runner = WorkflowRunner(runs_dir=runs_root, data_catalog=catalog, feature_registry=feature_registry)
     run_id = runner.run(
         recipe.compile(),
         run_config={
@@ -145,9 +173,14 @@ def main() -> None:
         tag="multi_global",
     )
 
-    single_spy, single_selected = _collect_metrics(run_single, runs_dir, asset="SPY")
-    multi_spy, multi_selected = _collect_metrics(run_multi, runs_dir, asset="SPY")
-    multi_global, _ = _collect_metrics(run_multi, runs_dir, asset=None)
+    single_spy, single_selected, _ = _collect_metrics(run_single, runs_dir, asset="SPY")
+    multi_spy, multi_selected, multi_per_asset = _collect_metrics(
+        run_multi,
+        runs_dir,
+        asset="SPY",
+        include_per_asset=True,
+    )
+    multi_global, _, _ = _collect_metrics(run_multi, runs_dir, asset=None)
 
     compare = (
         single_spy[["node_name", "rmse", "mae", "pearson_corr"]]
@@ -198,9 +231,49 @@ def main() -> None:
         "spy_best_rmse_delta_multi_minus_single": float(multi_spy["rmse"].min() - single_spy["rmse"].min()),
     }
 
+    best_model_by_asset = (
+        multi_per_asset.sort_values(["asset", "rmse"]).groupby("asset", as_index=False).first()
+        if not multi_per_asset.empty
+        else pd.DataFrame()
+    )
+    meta_vs_best_non_meta = pd.DataFrame()
+    if not multi_per_asset.empty:
+        meta_asset = multi_per_asset[multi_per_asset["node_name"] == "champion_meta_return"].rename(
+            columns={
+                "rmse": "meta_rmse",
+                "mae": "meta_mae",
+                "pearson_corr": "meta_corr",
+                "n_test": "meta_n_test",
+            }
+        )
+        best_non_meta = (
+            multi_per_asset[multi_per_asset["node_name"] != "champion_meta_return"]
+            .sort_values(["asset", "rmse"])
+            .groupby("asset", as_index=False)
+            .first()
+            .rename(
+                columns={
+                    "node_name": "best_non_meta_model",
+                    "rmse": "best_non_meta_rmse",
+                    "mae": "best_non_meta_mae",
+                    "pearson_corr": "best_non_meta_corr",
+                    "n_test": "best_non_meta_n_test",
+                }
+            )
+        )
+        meta_vs_best_non_meta = meta_asset.merge(best_non_meta, on="asset", how="left")
+        meta_vs_best_non_meta["rmse_delta_meta_minus_best_non_meta"] = (
+            meta_vs_best_non_meta["meta_rmse"] - meta_vs_best_non_meta["best_non_meta_rmse"]
+        )
+
+    summary["asset_count_multi"] = int(multi_per_asset["asset"].nunique()) if not multi_per_asset.empty else 0
+
     single_spy.to_csv(reports_dir / "single_spy_candidates.csv", index=False)
     multi_spy.to_csv(reports_dir / "multi_spy_candidates.csv", index=False)
     multi_global.to_csv(reports_dir / "multi_global_candidates.csv", index=False)
+    multi_per_asset.to_csv(reports_dir / "multi_per_asset_candidates.csv", index=False)
+    best_model_by_asset.to_csv(reports_dir / "multi_best_model_by_asset.csv", index=False)
+    meta_vs_best_non_meta.to_csv(reports_dir / "multi_meta_vs_best_non_meta_by_asset.csv", index=False)
     compare.to_csv(reports_dir / "spy_single_vs_multi_comparison.csv", index=False)
     (reports_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 

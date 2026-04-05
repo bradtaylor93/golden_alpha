@@ -857,6 +857,12 @@ class WorkflowRunner:
                 store=store,
             )
 
+        # Keep model universe aligned with requested recipe universe.
+        if "asset" in features.columns and "asset" in targets.columns:
+            target_assets = set(targets["asset"].astype(str).unique())
+            features = features[features["asset"].astype(str).isin(target_assets)].copy()
+            features = features.reset_index(drop=True)
+
         task_name = str(targets["task_name"].iloc[0]) if "task_name" in targets.columns else ""
         task_type_from_meta = str(target_ref.metadata.get("task_type", "")).lower()
         if task_type_from_meta in {"classification", "regression"}:
