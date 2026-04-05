@@ -29,6 +29,8 @@ PYTHONPATH=/workspace python3 trading_research/examples/10_spy_horizon_error_met
 PYTHONPATH=/workspace python3 trading_research/examples/11_champion_edge_recipe.py
 PYTHONPATH=/workspace python3 trading_research/examples/12_no_leakage_sanity_report.py
 PYTHONPATH=/workspace python3 trading_research/examples/13_global_learning_asset_expansion_test.py
+PYTHONPATH=/workspace python3 trading_research/examples/14_asset_specific_vol_feature_ablation.py
+PYTHONPATH=/workspace python3 trading_research/examples/15_regime_aware_moe_gating.py
 ```
 
 ## Polygon vendor usage
