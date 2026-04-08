@@ -42,5 +42,9 @@ def test_pipeline_smoke(tmp_path: Path) -> None:
     assert (out / "cluster_summaries.csv").exists()
     assert (out / "transition_matrix_order1.csv").exists()
     assert (out / "evaluation_metrics.json").exists()
+    assert (out / "change_event_predictions.csv").exists()
+    assert (out / "instability_features_test.csv").exists()
     assert isinstance(metrics, dict)
+    assert "change_event_model" in metrics
+    assert "hazard_model" in metrics
 

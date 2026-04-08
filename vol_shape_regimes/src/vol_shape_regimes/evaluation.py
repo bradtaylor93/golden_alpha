@@ -13,6 +13,7 @@ from sklearn.metrics import (
     f1_score,
     log_loss,
     precision_recall_fscore_support,
+    roc_auc_score,
 )
 
 
@@ -133,6 +134,92 @@ def change_event_diagnostics(
         "accuracy_on_change_events": change_acc,
         "confusion_matrix_change_events": cm.tolist(),
     }
+
+
+def evaluate_binary_change_predictions(
+    y_true_change: np.ndarray,
+    y_pred_change: np.ndarray,
+    prob_change: np.ndarray | None = None,
+) -> dict[str, Any]:
+    """Evaluate binary regime-change prediction metrics."""
+    y_true = np.asarray(y_true_change, dtype=int)
+    y_pred = np.asarray(y_pred_change, dtype=int)
+    if len(y_true) == 0:
+        return {
+            "accuracy": float("nan"),
+            "balanced_accuracy": float("nan"),
+            "macro_f1": float("nan"),
+            "precision_change": float("nan"),
+            "recall_change": float("nan"),
+            "roc_auc": float("nan"),
+            "support_change": 0,
+            "confusion_matrix": [[0, 0], [0, 0]],
+        }
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
+    pr, rc, f1, supp = precision_recall_fscore_support(
+        y_true, y_pred, labels=[0, 1], zero_division=0
+    )
+    out: dict[str, Any] = {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+        "macro_f1": float(f1_score(y_true, y_pred, average="macro")),
+        "precision_change": float(pr[1]),
+        "recall_change": float(rc[1]),
+        "f1_change": float(f1[1]),
+        "support_change": int(supp[1]),
+        "confusion_matrix": cm.tolist(),
+    }
+    if prob_change is not None:
+        p = np.asarray(prob_change, dtype=float)
+        if len(np.unique(y_true)) >= 2:
+            out["roc_auc"] = float(roc_auc_score(y_true, p))
+        else:
+            out["roc_auc"] = float("nan")
+    else:
+        out["roc_auc"] = float("nan")
+    return out
+
+
+def evaluate_transition_type_predictions(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    probs: np.ndarray | None = None,
+    classes: np.ndarray | list[str] | None = None,
+) -> dict[str, Any]:
+    """Evaluate transition-type classification on change events."""
+    y_true_arr = np.asarray(y_true, dtype=str)
+    y_pred_arr = np.asarray(y_pred, dtype=str)
+    if len(y_true) == 0:
+        return {
+            "accuracy": float("nan"),
+            "macro_f1": float("nan"),
+            "classes": [],
+            "confusion_matrix": [],
+            "support": 0,
+            "log_loss": float("nan"),
+        }
+    labels = (
+        [str(v) for v in classes]
+        if classes is not None
+        else sorted(np.unique(np.concatenate([y_true_arr, y_pred_arr])).tolist())
+    )
+    cm = confusion_matrix(y_true_arr, y_pred_arr, labels=labels)
+    out = {
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "macro_f1": float(f1_score(y_true_arr, y_pred_arr, average="macro")),
+        "classes": labels,
+        "confusion_matrix": cm.tolist(),
+        "support": int(len(y_true_arr)),
+    }
+    if probs is not None:
+        p = np.asarray(probs, dtype=float)
+        try:
+            out["log_loss"] = float(log_loss(y_true_arr, p, labels=labels))
+        except Exception:
+            out["log_loss"] = float("nan")
+    else:
+        out["log_loss"] = float("nan")
+    return out
 
 
 def interpret_state_label(

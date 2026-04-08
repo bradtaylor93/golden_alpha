@@ -24,16 +24,22 @@ from vol_shape_regimes.embeddings import fit_embedding, transform_embedding
 from vol_shape_regimes.evaluation import (
     change_event_diagnostics,
     dwell_time_by_state,
+    evaluate_binary_change_predictions,
     evaluate_state_predictions,
+    evaluate_transition_type_predictions,
     summarize_clusters,
     transition_out_probabilities,
 )
 from vol_shape_regimes.features import build_vol_series, build_window_features, compute_returns
 from vol_shape_regimes.markov import (
+    fit_binary_event_model,
     fit_conditional_transition_model,
+    fit_transition_type_model,
     fit_markov_model,
     path_log_likelihood,
+    predict_binary_event,
     predict_conditional_next_state,
+    predict_transition_type,
     transition_entropy,
     transition_matrix_to_frame,
 )
@@ -115,6 +121,88 @@ def _build_transition_frame(
     return train_df.reset_index(drop=True), test_df.reset_index(drop=True)
 
 
+def _time_in_state(states: np.ndarray) -> np.ndarray:
+    seq = np.asarray(states, dtype=int)
+    out = np.zeros(len(seq), dtype=int)
+    if len(seq) == 0:
+        return out
+    run = 1
+    out[0] = run
+    for i in range(1, len(seq)):
+        if seq[i] == seq[i - 1]:
+            run += 1
+        else:
+            run = 1
+        out[i] = run
+    return out
+
+
+def _build_instability_frame(
+    *,
+    states: np.ndarray,
+    emb: pd.DataFrame,
+    centroids: np.ndarray,
+    feature_frame: pd.DataFrame,
+    train_n: int,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Build leakage-safe rows for change-event and hazard modeling."""
+    emb_cols = list(emb.columns)
+    x = emb.to_numpy(dtype=float)
+    cur = np.asarray(states, dtype=int)
+    if len(cur) != len(feature_frame):
+        raise ValueError("states and feature_frame length mismatch")
+
+    time_in_state = _time_in_state(cur)
+    centroid_dist = np.linalg.norm(x - centroids[cur], axis=1)
+    emb_velocity = np.zeros(len(cur), dtype=float)
+    if len(cur) > 1:
+        emb_velocity[1:] = np.linalg.norm(x[1:] - x[:-1], axis=1)
+
+    vol_t = pd.to_numeric(feature_frame["vol_t"], errors="coerce").to_numpy(dtype=float)
+    vol_accel = np.zeros(len(vol_t), dtype=float)
+    if len(vol_t) > 2:
+        vol_accel[2:] = (vol_t[2:] - vol_t[1:-1]) - (vol_t[1:-1] - vol_t[:-2])
+    vol_of_vol = pd.Series(vol_t).rolling(10, min_periods=3).std().fillna(0.0).to_numpy(dtype=float)
+    ret = pd.to_numeric(feature_frame["ret"], errors="coerce").to_numpy(dtype=float)
+    ret_disp = pd.Series(ret).rolling(10, min_periods=3).std().fillna(0.0).to_numpy(dtype=float)
+    tail_hit = (np.abs(ret) > pd.Series(np.abs(ret)).rolling(50, min_periods=10).quantile(0.9).fillna(0.0)).astype(float)
+    tail_intensity = pd.Series(tail_hit).rolling(10, min_periods=1).mean().fillna(0.0).to_numpy(dtype=float)
+    entropy_proxy = pd.Series(np.abs(ret)).rolling(20, min_periods=5).std().fillna(0.0).to_numpy(dtype=float)
+    entropy_delta = np.r_[0.0, np.diff(entropy_proxy)]
+
+    rows: list[dict[str, Any]] = []
+    for t in range(1, len(cur) - 1):
+        nxt = int(cur[t + 1])
+        cst = int(cur[t])
+        row: dict[str, Any] = {
+            "t": int(t),
+            "date": pd.to_datetime(feature_frame.iloc[t]["date"]),
+            "current_state": cst,
+            "prev_state": int(cur[t - 1]),
+            "next_state": nxt,
+            "is_change": int(nxt != cst),
+            "transition_type": f"{cst}->{nxt}",
+            "distance_to_centroid": float(centroid_dist[t]),
+            "embedding_velocity": float(emb_velocity[t]),
+            "vol_t": float(vol_t[t]),
+            "vol_accel": float(vol_accel[t]),
+            "vol_of_vol": float(vol_of_vol[t]),
+            "tail_intensity": float(tail_intensity[t]),
+            "entropy_delta": float(entropy_delta[t]),
+            "ret_dispersion": float(ret_disp[t]),
+            "time_in_state": int(time_in_state[t]),
+        }
+        for col in emb_cols:
+            row[col] = float(emb.iloc[t][col])
+        rows.append(row)
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        raise ValueError("Instability frame is empty.")
+    train_df = frame[frame["t"] <= (train_n - 2)].copy().reset_index(drop=True)
+    test_df = frame[frame["t"] >= (train_n - 1)].copy().reset_index(drop=True)
+    return train_df, test_df
+
+
 def _conditional_design(train_df: pd.DataFrame, test_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
     cat_cols = ["current_state", "prev_state"]
     num_cols = [c for c in train_df.columns if c.startswith("emb_")] + ["ret_t", "vol_t", "sum_trend_slope"]
@@ -129,6 +217,54 @@ def _conditional_design(train_df: pd.DataFrame, test_df: pd.DataFrame) -> tuple[
     train_use = pd.concat([train_x, train_df[["next_state"]].reset_index(drop=True)], axis=1)
     test_use = pd.concat([test_x, test_df[["next_state"]].reset_index(drop=True)], axis=1)
     return train_use, test_use, feature_cols
+
+
+def _event_design(train_df: pd.DataFrame, test_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, list[str]]:
+    cat_cols = ["current_state", "prev_state"]
+    base_num = [
+        "distance_to_centroid",
+        "embedding_velocity",
+        "vol_t",
+        "vol_accel",
+        "vol_of_vol",
+        "tail_intensity",
+        "entropy_delta",
+        "ret_dispersion",
+        "time_in_state",
+    ]
+    emb_cols = [c for c in train_df.columns if c.startswith("emb_")]
+    num_cols = emb_cols + [c for c in base_num if c in train_df.columns]
+
+    train_cat = pd.get_dummies(train_df[cat_cols].astype(str), prefix=["cur", "prev"])
+    test_cat = pd.get_dummies(test_df[cat_cols].astype(str), prefix=["cur", "prev"])
+    train_cat, test_cat = train_cat.align(test_cat, join="outer", axis=1, fill_value=0)
+    train_x = pd.concat([train_cat.reset_index(drop=True), train_df[num_cols].reset_index(drop=True)], axis=1)
+    test_x = pd.concat([test_cat.reset_index(drop=True), test_df[num_cols].reset_index(drop=True)], axis=1)
+    feature_cols = list(train_x.columns)
+    train_use = pd.concat(
+        [
+            train_x,
+            train_df[["is_change", "transition_type", "next_state", "current_state", "time_in_state"]].reset_index(drop=True),
+        ],
+        axis=1,
+    )
+    test_use = pd.concat(
+        [
+            test_x,
+            test_df[["is_change", "transition_type", "next_state", "current_state", "time_in_state"]].reset_index(drop=True),
+        ],
+        axis=1,
+    )
+    return train_use, test_use, feature_cols
+
+
+def _hazard_dataset(frame: pd.DataFrame) -> pd.DataFrame:
+    """Create one-step hazard-style dataset from instability rows."""
+    out = frame.copy()
+    out["event_next"] = out["is_change"].astype(int)
+    # duration at t is known causally and can inform hazard.
+    out["duration"] = out["time_in_state"].astype(float)
+    return out
 
 
 def _candidate_transition_diagnostics(
@@ -434,6 +570,90 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
             n_states=cluster_model.k,
         )
 
+    log_step("fitting change-event / transition-type / hazard models")
+    instability_train, instability_test = _build_instability_frame(
+        states=full_states,
+        emb=x_all_emb,
+        centroids=cluster_model.centroids,
+        feature_frame=feat,
+        train_n=train_n,
+    )
+    event_train, event_test, event_cols = _event_design(instability_train, instability_test)
+
+    event_metrics: dict[str, Any] | None = None
+    transition_type_metrics: dict[str, Any] | None = None
+    hazard_metrics: dict[str, Any] | None = None
+    event_model = None
+    event_prob_test: np.ndarray | None = None
+    event_pred_test: np.ndarray | None = None
+    hazard_prob_test: np.ndarray | None = None
+    hazard_pred_test: np.ndarray | None = None
+    if event_train["is_change"].nunique() >= 2:
+        event_model = fit_binary_event_model(
+            frame=event_train,
+            feature_cols=event_cols,
+            target_col="is_change",
+            class_weight="balanced",
+            max_iter=max(500, config.transitions.conditional_max_iter),
+            threshold=0.5,
+        )
+        event_prob_test, event_pred_test = predict_binary_event(event_model, event_test)
+        event_metrics = evaluate_binary_change_predictions(
+            y_true_change=event_test["is_change"].to_numpy(dtype=int),
+            y_pred_change=event_pred_test,
+            prob_change=event_prob_test,
+        )
+
+        # Transition type only on predicted change events where y_true class exists in train.
+        type_train = event_train[event_train["is_change"] == 1].copy()
+        type_test = event_test[event_test["is_change"] == 1].copy()
+        if not type_train.empty and not type_test.empty and type_train["transition_type"].nunique() >= 2:
+            tt_model = fit_transition_type_model(
+                frame=type_train,
+                feature_cols=event_cols,
+                target_col="transition_type",
+                class_weight=None,
+                max_iter=max(500, config.transitions.conditional_max_iter),
+            )
+            tt_probs, tt_pred = predict_transition_type(tt_model, type_test)
+            transition_type_metrics = evaluate_transition_type_predictions(
+                y_true=type_test["transition_type"].astype(str).to_numpy(),
+                y_pred=tt_pred,
+                probs=tt_probs,
+                classes=tt_model.classes_,
+            )
+
+        # Hazard-style model: same binary target with explicit time_in_state channel.
+        hazard_model = fit_binary_event_model(
+            frame=event_train,
+            feature_cols=event_cols,
+            target_col="is_change",
+            class_weight="balanced",
+            max_iter=max(500, config.transitions.conditional_max_iter),
+            threshold=0.5,
+        )
+        hazard_prob, hazard_pred = predict_binary_event(hazard_model, event_test)
+        hazard_prob_test = hazard_prob
+        hazard_pred_test = hazard_pred
+        hazard_metrics = evaluate_binary_change_predictions(
+            y_true_change=event_test["is_change"].to_numpy(dtype=int),
+            y_pred_change=hazard_pred,
+            prob_change=hazard_prob,
+        )
+    else:
+        event_metrics = {
+            "accuracy": float("nan"),
+            "balanced_accuracy": float("nan"),
+            "macro_f1": float("nan"),
+            "precision_change": float("nan"),
+            "recall_change": float("nan"),
+            "f1_change": float("nan"),
+            "support_change": 0,
+            "roc_auc": float("nan"),
+            "average_precision": float("nan"),
+            "confusion_matrix": [[0, 0], [0, 0]],
+        }
+
     log_step("running baselines")
     persistence_preds = persistence_baseline(current_states)
     persistence_metrics = evaluate_state_predictions(
@@ -516,6 +736,21 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
     candidate_transition_diag[
         candidate_transition_diag["k"].isin([4, 5]) | (candidate_transition_diag["method"].str.lower() == "gmm")
     ].to_csv(output_dir / "candidate_k4_k5_gmm_comparison.csv", index=False)
+    instability_test.to_csv(output_dir / "instability_features_test.csv", index=False)
+    event_test_out = event_test.copy()
+    if event_prob_test is not None and event_pred_test is not None:
+        event_test_out["pred_change_prob"] = event_prob_test
+        event_test_out["pred_change"] = event_pred_test
+    event_test_out.to_csv(output_dir / "change_event_predictions.csv", index=False)
+    if hazard_prob_test is not None and hazard_pred_test is not None:
+        hazard_test_out = event_test.copy()
+        hazard_test_out["pred_hazard_prob"] = hazard_prob_test
+        hazard_test_out["pred_hazard_change"] = hazard_pred_test
+        hazard_test_out.to_csv(output_dir / "hazard_change_predictions.csv", index=False)
+    if transition_type_metrics is not None:
+        type_rows = event_test[event_test["is_change"] == 1].copy()
+        if "transition_type" in type_rows.columns:
+            type_rows.to_csv(output_dir / "transition_type_events_test.csv", index=False)
     matrix_2_df.to_csv(output_dir / "transition_matrix_order2.csv", index=False)
     feat[["date", "close", "vol_t", "ret", "abs_ret", "state"]].to_csv(output_dir / "state_timeline.csv", index=False)
     pd.DataFrame(markov_change_diag["confusion_matrix_change_events"]).to_csv(
@@ -558,6 +793,22 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
                 "macro_f1": conditional_metrics["macro_f1"],
             }
         )
+    if event_metrics is not None and not np.isnan(float(event_metrics.get("balanced_accuracy", np.nan))):
+        baseline_comparison.append(
+            {
+                "model": "change_event_logit",
+                "accuracy": float(event_metrics["balanced_accuracy"]),
+                "macro_f1": float(event_metrics.get("f1_change", np.nan)),
+            }
+        )
+    if hazard_metrics is not None and not np.isnan(float(hazard_metrics.get("balanced_accuracy", np.nan))):
+        baseline_comparison.append(
+            {
+                "model": "hazard_change_logit",
+                "accuracy": float(hazard_metrics["balanced_accuracy"]),
+                "macro_f1": float(hazard_metrics.get("f1_change", np.nan)),
+            }
+        )
 
     best_cluster_row = clustering_diag.iloc[0].to_dict() if not clustering_diag.empty else {}
     evaluation = {
@@ -587,6 +838,9 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
             if conditional_metrics is not None
             else None
         ),
+        "change_event_model": event_metrics,
+        "transition_type_model": transition_type_metrics,
+        "hazard_model": hazard_metrics,
         "baselines": {
             "persistence": {**persistence_metrics, "change_event": persistence_change_diag},
             "empirical_transition": empirical_metrics,

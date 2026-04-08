@@ -85,6 +85,20 @@ class ConditionalTransitionModel:
     n_states: int
 
 
+@dataclass
+class BinaryEventModel:
+    model: LogisticRegression
+    feature_cols: list[str]
+    threshold: float
+
+
+@dataclass
+class TransitionTypeModel:
+    model: LogisticRegression
+    feature_cols: list[str]
+    classes_: np.ndarray
+
+
 def fit_conditional_transition_model(
     frame: pd.DataFrame,
     feature_cols: list[str],
@@ -114,6 +128,107 @@ def predict_conditional_next_state(
     probs = model.model.predict_proba(x)
     preds = np.argmax(probs, axis=1).astype(int)
     return probs, preds
+
+
+def fit_binary_event_model(
+    frame: pd.DataFrame,
+    feature_cols: list[str],
+    target_col: str,
+    *,
+    class_weight: str | None = "balanced",
+    max_iter: int = 500,
+    threshold: float = 0.5,
+) -> BinaryEventModel:
+    """Fit binary logistic model for event probability prediction."""
+    if frame.empty:
+        raise ValueError("Cannot fit binary event model on empty frame.")
+    x = frame[feature_cols].to_numpy(dtype=float)
+    y = frame[target_col].to_numpy(dtype=int)
+    if len(np.unique(y)) < 2:
+        raise ValueError("Binary event model needs both classes in train set.")
+    clf = LogisticRegression(
+        solver="lbfgs",
+        max_iter=max_iter,
+        random_state=0,
+        class_weight=class_weight,
+    )
+    clf.fit(x, y)
+    return BinaryEventModel(model=clf, feature_cols=feature_cols, threshold=float(threshold))
+
+
+def predict_binary_event(
+    model: BinaryEventModel,
+    frame: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (probability_of_event, hard_prediction)."""
+    x = frame[model.feature_cols].to_numpy(dtype=float)
+    prob = model.model.predict_proba(x)[:, 1]
+    pred = (prob >= model.threshold).astype(int)
+    return prob.astype(float), pred
+
+
+def fit_transition_type_model(
+    frame: pd.DataFrame,
+    feature_cols: list[str],
+    target_col: str,
+    *,
+    class_weight: str | None = None,
+    max_iter: int = 500,
+) -> TransitionTypeModel:
+    """Fit multinomial logistic model for transition-type classification."""
+    if frame.empty:
+        raise ValueError("Cannot fit transition-type model on empty frame.")
+    x = frame[feature_cols].to_numpy(dtype=float)
+    y = frame[target_col].astype(str).to_numpy()
+    if len(np.unique(y)) < 2:
+        raise ValueError("Transition-type model needs at least 2 classes in train set.")
+    clf = LogisticRegression(
+        solver="lbfgs",
+        max_iter=max_iter,
+        random_state=0,
+        class_weight=class_weight,
+    )
+    clf.fit(x, y)
+    return TransitionTypeModel(model=clf, feature_cols=feature_cols, classes_=clf.classes_)
+
+
+def predict_transition_type(
+    model: TransitionTypeModel,
+    frame: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return (class_probs, class_predictions) for transition-type model."""
+    x = frame[model.feature_cols].to_numpy(dtype=float)
+    probs = model.model.predict_proba(x)
+    preds = model.model.predict(x)
+    return probs.astype(float), preds.astype(str)
+
+
+def fit_hazard_change_model(
+    frame: pd.DataFrame,
+    feature_cols: list[str],
+    target_col: str,
+    *,
+    class_weight: str | None = "balanced",
+    max_iter: int = 500,
+    threshold: float = 0.5,
+) -> BinaryEventModel:
+    """Fit hazard-style binary model for next-step regime break probability."""
+    return fit_binary_event_model(
+        frame=frame,
+        feature_cols=feature_cols,
+        target_col=target_col,
+        class_weight=class_weight,
+        max_iter=max_iter,
+        threshold=threshold,
+    )
+
+
+def predict_hazard_change(
+    model: BinaryEventModel,
+    frame: pd.DataFrame,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Predict hazard probability and hard change/no-change labels."""
+    return predict_binary_event(model, frame)
 
 
 def path_log_likelihood(
