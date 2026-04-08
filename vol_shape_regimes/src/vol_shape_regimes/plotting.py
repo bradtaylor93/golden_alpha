@@ -89,11 +89,16 @@ def plot_dwell_histogram(dwell_df: pd.DataFrame, output_path: Path) -> None:
     plt.close()
 
 
-def plot_confusion_matrix(cm: np.ndarray, output_path: Path) -> None:
+def plot_confusion_matrix(
+    cm: np.ndarray,
+    output_path: Path,
+    *,
+    title: str = "Next-state confusion matrix",
+) -> None:
     plt.figure(figsize=(6, 5))
     plt.imshow(cm, cmap="Blues", aspect="auto")
     plt.colorbar(label="count")
-    plt.title("Next-state confusion matrix")
+    plt.title(title)
     plt.xlabel("predicted")
     plt.ylabel("true")
     for i in range(cm.shape[0]):

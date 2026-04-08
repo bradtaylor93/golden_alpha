@@ -90,24 +90,73 @@ def transition_out_probabilities(matrix: np.ndarray) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def change_event_diagnostics(
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    current_state: np.ndarray,
+    n_states: int,
+) -> dict[str, Any]:
+    """Evaluate predictions only on true change events (S_{t+1} != S_t)."""
+    y_true_arr = np.asarray(y_true, dtype=int)
+    y_pred_arr = np.asarray(y_pred, dtype=int)
+    cur_arr = np.asarray(current_state, dtype=int)
+    if len(y_true_arr) != len(y_pred_arr) or len(y_true_arr) != len(cur_arr):
+        raise ValueError("y_true, y_pred, and current_state must have equal length.")
+    if len(y_true_arr) == 0:
+        empty_cm = np.zeros((n_states, n_states), dtype=int)
+        return {
+            "same_state_fraction": float("nan"),
+            "change_event_fraction": float("nan"),
+            "n_change_events": 0,
+            "accuracy_on_change_events": float("nan"),
+            "confusion_matrix_change_events": empty_cm.tolist(),
+        }
+
+    same_mask = y_true_arr == cur_arr
+    change_mask = ~same_mask
+    n_change = int(np.sum(change_mask))
+    cm = np.zeros((n_states, n_states), dtype=int)
+    if n_change > 0:
+        cm = confusion_matrix(
+            y_true_arr[change_mask],
+            y_pred_arr[change_mask],
+            labels=np.arange(n_states),
+        )
+        change_acc = float(accuracy_score(y_true_arr[change_mask], y_pred_arr[change_mask]))
+    else:
+        change_acc = float("nan")
+
+    return {
+        "same_state_fraction": float(np.mean(same_mask)),
+        "change_event_fraction": float(np.mean(change_mask)),
+        "n_change_events": n_change,
+        "accuracy_on_change_events": change_acc,
+        "confusion_matrix_change_events": cm.tolist(),
+    }
+
+
 def interpret_state_label(
     avg_vol: float,
     avg_future_vol: float,
     avg_slope: float,
     avg_spike_count: float,
     global_vol_quantiles: tuple[float, float],
+    avg_jaggedness: float = 0.0,
+    global_jagged_quantiles: tuple[float, float] = (0.0, 0.0),
 ) -> str:
     low_q, high_q = global_vol_quantiles
-    if avg_vol <= low_q:
-        level = "low"
-    elif avg_vol >= high_q:
-        level = "high"
-    else:
-        level = "medium"
-    trend = "rising" if avg_slope > 0 else "falling"
-    if abs(avg_slope) < 1e-5:
-        trend = "flat"
-    texture = "clustered" if avg_spike_count >= 3 else "smooth"
+    low_jag, high_jag = global_jagged_quantiles
+
+    if avg_vol <= low_q and avg_jaggedness <= low_jag and abs(avg_slope) <= 1e-4:
+        return "low smooth vol"
+    if avg_vol >= high_q and (avg_slope < 0 or avg_future_vol < avg_vol):
+        return "stressed shock-decay vol"
+    if avg_slope > 0 or avg_jaggedness >= low_jag:
+        return "rising choppy vol"
+
+    level = "low" if avg_vol <= low_q else ("high" if avg_vol >= high_q else "medium")
+    trend = "rising" if avg_slope > 0 else ("falling" if avg_slope < 0 else "flat")
+    texture = "choppy" if avg_jaggedness >= high_jag else "smooth"
     direction = "escalation" if avg_future_vol > avg_vol else "decay"
     return f"{level} {texture} vol, {trend}, {direction}"
 
@@ -127,19 +176,32 @@ def summarize_clusters(
     frame["future_vol"] = frame["vol_t"].shift(-1)
     frame["future_abs_ret"] = pd.to_numeric(abs_returns_aligned, errors="coerce").shift(-1).to_numpy()
 
-    vol_q = (float(frame["vol_t"].quantile(0.33)), float(frame["vol_t"].quantile(0.67)))
+    state_means = frame.groupby("state", observed=True)["vol_t"].mean()
+    vol_q = (float(state_means.quantile(0.33)), float(state_means.quantile(0.67)))
+    if "sum_jaggedness" in frame.columns and frame["sum_jaggedness"].notna().any():
+        state_jag = frame.groupby("state", observed=True)["sum_jaggedness"].mean()
+        jag_q = (
+            float(state_jag.quantile(0.33)),
+            float(state_jag.quantile(0.67)),
+        )
+    else:
+        jag_q = (0.0, 0.0)
     out_rows: list[dict[str, float | int | str]] = []
     for s, grp in frame.groupby("state", sort=True):
         slope_col = "sum_trend_slope" if "sum_trend_slope" in grp.columns else None
         spike_col = "sum_spike_count" if "sum_spike_count" in grp.columns else None
+        jag_col = "sum_jaggedness" if "sum_jaggedness" in grp.columns else None
         avg_slope = float(grp[slope_col].mean()) if slope_col else 0.0
         avg_spike = float(grp[spike_col].mean()) if spike_col else 0.0
+        avg_jag = float(grp[jag_col].mean()) if jag_col else 0.0
         label = interpret_state_label(
             avg_vol=float(grp["vol_t"].mean()),
             avg_future_vol=float(grp["future_vol"].mean()),
             avg_slope=avg_slope,
             avg_spike_count=avg_spike,
             global_vol_quantiles=vol_q,
+            avg_jaggedness=avg_jag,
+            global_jagged_quantiles=jag_q,
         )
         row: dict[str, float | int | str] = {
             "state": int(s),
@@ -150,6 +212,7 @@ def summarize_clusters(
             "avg_future_abs_return": float(grp["future_abs_ret"].mean()),
             "avg_slope": avg_slope,
             "avg_spike_count": avg_spike,
+            "avg_jaggedness": avg_jag,
             "interpretation": label,
         }
         for j in range(transition_matrix.shape[1]):

@@ -18,10 +18,11 @@ from vol_shape_regimes.baselines import (
     scalar_volatility_states,
 )
 from vol_shape_regimes.clustering import assign_states, fit_clusterer
-from vol_shape_regimes.config import ExperimentConfig, load_experiment_config
+from vol_shape_regimes.config import ClusteringConfig, ExperimentConfig, load_experiment_config
 from vol_shape_regimes.data import load_price_data
 from vol_shape_regimes.embeddings import fit_embedding, transform_embedding
 from vol_shape_regimes.evaluation import (
+    change_event_diagnostics,
     dwell_time_by_state,
     evaluate_state_predictions,
     summarize_clusters,
@@ -130,12 +131,105 @@ def _conditional_design(train_df: pd.DataFrame, test_df: pd.DataFrame) -> tuple[
     return train_use, test_use, feature_cols
 
 
+def _candidate_transition_diagnostics(
+    x_train_emb: pd.DataFrame,
+    x_all_emb: pd.DataFrame,
+    train_n: int,
+    cfg: ExperimentConfig,
+    clustering_diag: pd.DataFrame,
+) -> pd.DataFrame:
+    """Evaluate first-order next-state diagnostics across clustering candidates."""
+    cols = [
+        "method",
+        "k",
+        "silhouette",
+        "davies_bouldin",
+        "calinski_harabasz",
+        "temporal_stability",
+        "min_occupancy",
+        "same_state_fraction",
+        "change_event_fraction",
+        "n_change_events",
+        "markov_order1_accuracy",
+        "persistence_accuracy",
+        "change_event_accuracy",
+    ]
+    rows: list[dict[str, Any]] = []
+    for _, cand in clustering_diag.iterrows():
+        method = str(cand["method"])
+        k = int(cand["k"])
+        single_cfg = ClusteringConfig(
+            methods=(method,),
+            k_min=k,
+            k_max=k,
+            random_state=cfg.clustering.random_state,
+            min_state_occupancy=cfg.clustering.min_state_occupancy,
+            select_metric=cfg.clustering.select_metric,
+        )
+        c_model, _, _ = fit_clusterer(x_train_emb, single_cfg)
+        states = assign_states(c_model, x_all_emb)
+        y_true = states[train_n:]
+        current = states[train_n - 1 : -1]
+        markov = fit_markov_model(
+            states_train=states[:train_n],
+            order=1,
+            n_states=k,
+            smoothing=cfg.transitions.laplace_smoothing,
+        )
+        probs = np.vstack([markov.predict_proba(int(s)) for s in current])
+        preds = np.argmax(probs, axis=1).astype(int)
+        eval_main = evaluate_state_predictions(
+            y_true=y_true,
+            y_pred=preds,
+            probs=probs,
+            top_k=cfg.evaluation.top_k_accuracy,
+        )
+        eval_change = change_event_diagnostics(
+            y_true=y_true,
+            y_pred=preds,
+            current_state=current,
+            n_states=k,
+        )
+        persistence_pred = persistence_baseline(current)
+        persistence_eval = evaluate_state_predictions(
+            y_true=y_true,
+            y_pred=persistence_pred,
+            probs=None,
+            top_k=cfg.evaluation.top_k_accuracy,
+        )
+        rows.append(
+            {
+                "method": method,
+                "k": k,
+                "silhouette": float(cand.get("silhouette", float("nan"))),
+                "davies_bouldin": float(cand.get("davies_bouldin", float("nan"))),
+                "calinski_harabasz": float(cand.get("calinski_harabasz", float("nan"))),
+                "temporal_stability": float(cand.get("temporal_stability", float("nan"))),
+                "min_occupancy": float(cand.get("min_occupancy", float("nan"))),
+                "same_state_fraction": float(eval_change["same_state_fraction"]),
+                "change_event_fraction": float(eval_change["change_event_fraction"]),
+                "n_change_events": int(eval_change["n_change_events"]),
+                "markov_order1_accuracy": float(eval_main["accuracy"]),
+                "persistence_accuracy": float(persistence_eval["accuracy"]),
+                "change_event_accuracy": float(eval_change["accuracy_on_change_events"]),
+            }
+        )
+    out = pd.DataFrame(rows, columns=cols)
+    if out.empty:
+        return out
+    return out.sort_values(
+        by=["markov_order1_accuracy", "silhouette"],
+        ascending=[False, False],
+    ).reset_index(drop=True)
+
+
 def _write_markdown_summary(
     output_dir: Path,
     config: ExperimentConfig,
     metrics: dict[str, Any],
     cluster_summary: pd.DataFrame,
     best_clustering_row: dict[str, Any],
+    candidate_transition_diag: pd.DataFrame,
 ) -> None:
     baseline_tbl = pd.DataFrame(metrics["baseline_comparison"])
     best_row = baseline_tbl.sort_values("accuracy", ascending=False).iloc[0]
@@ -156,6 +250,8 @@ def _write_markdown_summary(
         f"- best model: {best_row['model']}",
         f"- best accuracy: {best_row['accuracy']:.4f}",
         f"- persistence accuracy: {metrics['baselines']['persistence']['accuracy']:.4f}",
+        f"- fraction S_t+1 = S_t (test): {metrics['markov']['same_state_fraction']:.4f}",
+        f"- accuracy on change events only: {metrics['markov']['change_event']['accuracy_on_change_events']:.4f}",
         "",
         "## Cluster stability / interpretability",
         f"- average dwell length: {metrics['dwell']['overall_mean_dwell']:.2f}",
@@ -171,6 +267,29 @@ def _write_markdown_summary(
                 f"future_vol={row['avg_future_vol']:.5f}"
             )
         )
+    txt.append("")
+    txt.append("## Interpretation archetype check")
+    labels = [str(v).lower() for v in cluster_summary["interpretation"].tolist()]
+    txt.append(f"- low smooth vol found: {any('low smooth vol' in v for v in labels)}")
+    txt.append(f"- rising/choppy vol found: {any('rising choppy vol' in v for v in labels)}")
+    txt.append(f"- stressed shock-decay vol found: {any('stressed shock-decay vol' in v for v in labels)}")
+    txt.append("")
+    txt.append("## K=4/K=5 and GMM comparison")
+    subset = candidate_transition_diag[
+        candidate_transition_diag["k"].isin([4, 5]) | (candidate_transition_diag["method"].str.lower() == "gmm")
+    ].copy()
+    if subset.empty:
+        txt.append("- no matching candidates in this run.")
+    else:
+        for _, row in subset.sort_values(["markov_order1_accuracy", "silhouette"], ascending=[False, False]).iterrows():
+            txt.append(
+                "- "
+                f"{row['method']} K={int(row['k'])}: "
+                f"markov_acc={float(row['markov_order1_accuracy']):.4f}, "
+                f"change_acc={float(row['change_event_accuracy']):.4f}, "
+                f"same_frac={float(row['same_state_fraction']):.4f}, "
+                f"silhouette={float(row['silhouette']):.4f}"
+            )
     txt.append("")
     txt.append("## Conclusion")
     if best_row["accuracy"] > metrics["baselines"]["persistence"]["accuracy"]:
@@ -241,8 +360,15 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
         probs=probs_markov,
         top_k=config.evaluation.top_k_accuracy,
     )
+    markov_change_diag = change_event_diagnostics(
+        y_true=y_true,
+        y_pred=preds_markov,
+        current_state=current_states,
+        n_states=cluster_model.k,
+    )
 
     second_order_metrics: dict[str, Any] | None = None
+    second_order_change_diag: dict[str, Any] | None = None
     matrix_2_df = pd.DataFrame()
     if config.transitions.fit_second_order:
         log_step("fitting second-order markov model")
@@ -265,6 +391,12 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
             probs=probs2,
             top_k=config.evaluation.top_k_accuracy,
         )
+        second_order_change_diag = change_event_diagnostics(
+            y_true=y_true,
+            y_pred=preds2,
+            current_state=current_states,
+            n_states=cluster_model.k,
+        )
         flat_rows: list[dict[str, Any]] = []
         assert markov_2.transition_2 is not None
         for s_prev in range(markov_2.n_states):
@@ -277,6 +409,7 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
 
     log_step("fitting conditional transition model")
     conditional_metrics: dict[str, Any] | None = None
+    conditional_change_diag: dict[str, Any] | None = None
     if config.transitions.fit_conditional_model:
         train_trans, test_trans = _build_transition_frame(full_states, x_all_emb, feat, train_n)
         cond_train, cond_test, cond_cols = _conditional_design(train_trans, test_trans)
@@ -294,6 +427,12 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
             probs=cond_probs,
             top_k=config.evaluation.top_k_accuracy,
         )
+        conditional_change_diag = change_event_diagnostics(
+            y_true=cond_test["next_state"].to_numpy(dtype=int),
+            y_pred=cond_preds,
+            current_state=test_trans["current_state"].to_numpy(dtype=int),
+            n_states=cluster_model.k,
+        )
 
     log_step("running baselines")
     persistence_preds = persistence_baseline(current_states)
@@ -302,6 +441,12 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
         y_pred=persistence_preds,
         probs=None,
         top_k=config.evaluation.top_k_accuracy,
+    )
+    persistence_change_diag = change_event_diagnostics(
+        y_true=y_true,
+        y_pred=persistence_preds,
+        current_state=current_states,
+        n_states=cluster_model.k,
     )
     empirical_preds = empirical_transition_baseline(markov_1, current_states)
     empirical_metrics = evaluate_state_predictions(y_true=y_true, y_pred=empirical_preds)
@@ -325,6 +470,14 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
         smoothing=config.transitions.laplace_smoothing,
     )
     scalar_metrics = evaluate_state_predictions(y_true=y_scalar, y_pred=pred_scalar)
+
+    candidate_transition_diag = _candidate_transition_diagnostics(
+        x_train_emb=x_train_emb,
+        x_all_emb=x_all_emb,
+        train_n=train_n,
+        cfg=config,
+        clustering_diag=clustering_diag,
+    )
 
     log_step("building interpretability tables")
     cluster_summary = summarize_clusters(
@@ -359,15 +512,32 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
     dwell_df.to_csv(output_dir / "dwell_times.csv", index=False)
     dwell_summary.to_csv(output_dir / "dwell_summary.csv", index=False)
     clustering_diag.to_csv(output_dir / "clustering_model_selection.csv", index=False)
+    candidate_transition_diag.to_csv(output_dir / "candidate_transition_diagnostics.csv", index=False)
+    candidate_transition_diag[
+        candidate_transition_diag["k"].isin([4, 5]) | (candidate_transition_diag["method"].str.lower() == "gmm")
+    ].to_csv(output_dir / "candidate_k4_k5_gmm_comparison.csv", index=False)
     matrix_2_df.to_csv(output_dir / "transition_matrix_order2.csv", index=False)
     feat[["date", "close", "vol_t", "ret", "abs_ret", "state"]].to_csv(output_dir / "state_timeline.csv", index=False)
+    pd.DataFrame(markov_change_diag["confusion_matrix_change_events"]).to_csv(
+        output_dir / "confusion_change_events_markov_order1.csv",
+        index=False,
+    )
 
     log_step("generating plots")
     plot_embedding_scatter(x_all_emb, full_states, feat["date"], plots_dir / "embedding_states.png")
     plot_transition_heatmap(matrix_1, plots_dir / "transition_heatmap.png")
     plot_state_timeline(feat["date"], feat["close"], full_states, plots_dir / "state_timeline.png")
     plot_dwell_histogram(dwell_df, plots_dir / "dwell_histogram.png")
-    plot_confusion_matrix(np.asarray(metrics_markov["confusion_matrix"]), plots_dir / "confusion_markov_order1.png")
+    plot_confusion_matrix(
+        np.asarray(metrics_markov["confusion_matrix"]),
+        plots_dir / "confusion_markov_order1.png",
+        title="Next-state confusion matrix (all events)",
+    )
+    plot_confusion_matrix(
+        np.asarray(markov_change_diag["confusion_matrix_change_events"]),
+        plots_dir / "confusion_markov_order1_change_events.png",
+        title="Next-state confusion matrix (change events only)",
+    )
 
     baseline_comparison = [
         {"model": "markov_order1", "accuracy": metrics_markov["accuracy"], "macro_f1": metrics_markov["macro_f1"]},
@@ -402,18 +572,29 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
         "embedding": emb_diag,
         "markov": {
             **metrics_markov,
+            "same_state_fraction": float(markov_change_diag["same_state_fraction"]),
+            "change_event": markov_change_diag,
             "transition_entropy": transition_entropy(matrix_1),
             "path_log_likelihood_test": path_log_likelihood(markov_1, full_states[train_n - 1 :]),
         },
-        "markov_order2": second_order_metrics,
-        "conditional_model": conditional_metrics,
+        "markov_order2": (
+            {**second_order_metrics, "change_event": second_order_change_diag}
+            if second_order_metrics is not None
+            else None
+        ),
+        "conditional_model": (
+            {**conditional_metrics, "change_event": conditional_change_diag}
+            if conditional_metrics is not None
+            else None
+        ),
         "baselines": {
-            "persistence": persistence_metrics,
+            "persistence": {**persistence_metrics, "change_event": persistence_change_diag},
             "empirical_transition": empirical_metrics,
             "scalar_volatility": scalar_metrics,
             "random_frequency": random_metrics,
         },
         "baseline_comparison": baseline_comparison,
+        "candidate_transition_diagnostics": candidate_transition_diag.to_dict(orient="records"),
         "dwell": {
             "overall_mean_dwell": float(dwell_df["dwell_len"].mean()),
             "overall_median_dwell": float(dwell_df["dwell_len"].median()),
@@ -427,6 +608,7 @@ def run_experiment(config: ExperimentConfig) -> dict[str, Any]:
         metrics=evaluation,
         cluster_summary=cluster_summary,
         best_clustering_row=best_cluster_row,
+        candidate_transition_diag=candidate_transition_diag,
     )
 
     log_step(f"done. artifacts saved to: {output_dir}")
