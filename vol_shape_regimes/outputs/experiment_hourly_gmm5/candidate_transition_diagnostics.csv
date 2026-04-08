@@ -1,0 +1,2 @@
+method,k,silhouette,davies_bouldin,calinski_harabasz,temporal_stability,min_occupancy,same_state_fraction,change_event_fraction,n_change_events,markov_order1_accuracy,persistence_accuracy,change_event_accuracy
+gmm,5,0.10607838473204949,2.0963132648195897,789.142403122795,0.9829529037850332,0.03726169844020797,0.9454545454545454,0.05454545454545454,81,0.9454545454545454,0.9454545454545454,0.0
