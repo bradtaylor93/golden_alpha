@@ -15,6 +15,8 @@ class DataConfig:
     asset: str = "SPY"
     start: str = "2010-01-01"
     end: str | None = None
+    period: str | None = None
+    interval: str = "1d"
     csv_path: str | None = None
     date_col: str = "date"
     close_col: str = "close"

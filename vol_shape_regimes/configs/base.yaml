@@ -5,6 +5,8 @@ data:
   asset: SPY
   start: "2010-01-01"
   end: null
+  period: null
+  interval: "1d"
   csv_path: null
   date_col: date
   close_col: close

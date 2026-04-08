@@ -23,16 +23,27 @@ def _load_yahoo(cfg: DataConfig) -> pd.DataFrame:
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError("yfinance is required for data.source='yahoo'") from exc
 
-    df = yf.download(
-        cfg.asset,
-        start=cfg.start,
-        end=cfg.end,
-        interval="1d",
-        auto_adjust=True,
-        progress=False,
-    )
+    download_kwargs: dict[str, Any] = {
+        "interval": cfg.interval,
+        "auto_adjust": True,
+        "progress": False,
+    }
+    if cfg.period:
+        download_kwargs["period"] = cfg.period
+    else:
+        download_kwargs["start"] = cfg.start
+        if cfg.end is not None:
+            download_kwargs["end"] = cfg.end
+
+    df = yf.download(cfg.asset, **download_kwargs)
     if df is None or df.empty:
-        raise ValueError(f"No Yahoo data returned for {cfg.asset} [{cfg.start}, {cfg.end}]")
+        if cfg.period:
+            raise ValueError(
+                f"No Yahoo data returned for {cfg.asset} [period={cfg.period}, interval={cfg.interval}]"
+            )
+        raise ValueError(
+            f"No Yahoo data returned for {cfg.asset} [{cfg.start}, {cfg.end}] interval={cfg.interval}"
+        )
     # yfinance may return MultiIndex columns (Price, Ticker) for single tickers.
     if isinstance(df.columns, pd.MultiIndex):
         if cfg.asset in df.columns.get_level_values(-1):
