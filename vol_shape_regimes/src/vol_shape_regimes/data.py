@@ -139,6 +139,7 @@ def load_price_data(cfg: DataConfig) -> PriceData:
     else:
         raise ValueError(f"Unsupported data source: {cfg.source}")
 
+    frame["date"] = pd.to_datetime(frame["date"], utc=True, errors="coerce").dt.tz_localize(None)
     frame = frame.dropna(subset=["date", "close"]).copy()
     frame = frame[frame["close"] > 0].sort_values("date").reset_index(drop=True)
     if len(frame) < 200:
