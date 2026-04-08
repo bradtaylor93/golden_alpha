@@ -1,0 +1,58 @@
+experiment_name: base
+
+data:
+  source: synthetic  # synthetic | yahoo | csv
+  asset: SPY
+  start: "2010-01-01"
+  end: null
+  csv_path: null
+  date_col: date
+  close_col: close
+  random_state: 42
+  synthetic_rows: 1500
+
+volatility:
+  method: ewma_std  # abs_return | squared_return | rolling_std | ewma_std | parkinson | garman_klass
+  return_type: log  # log | simple
+  rolling_window: 20
+  ewma_span: 20
+
+features:
+  lookback_window: 50
+  modes: ["summary", "quantile", "temporal"]  # summary | quantile | histogram | temporal
+  quantile_points: 25
+  histogram_bins: 20
+  temporal_downsample: 12
+  temporal_dct_components: 8
+  temporal_acf_lags: 5
+  spike_quantile: 0.90
+  run_quantile: 0.75
+  pacf_lags: 3
+
+embedding:
+  method: pca  # identity | pca
+  standardize: true
+  pca_variance_threshold: 0.95
+  max_components: 20
+
+clustering:
+  methods: ["kmeans", "gmm"]  # kmeans | gmm | agglomerative
+  k_min: 3
+  k_max: 6
+  random_state: 42
+  min_state_occupancy: 0.05
+  select_metric: silhouette  # silhouette | calinski_harabasz
+
+transitions:
+  markov_order: 1
+  laplace_smoothing: 1.0
+  fit_second_order: false
+  fit_conditional_model: true
+  conditional_max_iter: 500
+
+evaluation:
+  train_ratio: 0.70
+  top_k_accuracy: 2
+
+output:
+  base_dir: /workspace/vol_shape_regimes/outputs
