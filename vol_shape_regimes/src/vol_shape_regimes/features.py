@@ -252,14 +252,14 @@ def build_window_features(vol_series: pd.Series, cfg: FeatureConfig, dates: pd.S
     rows: list[dict[str, float | str]] = []
     for end_idx, win in _iter_windows(vol_series, cfg.lookback_window):
         feat_row = _window_feature_map(win, cfg)
-        feat_row["date"] = str(pd.to_datetime(dates.iloc[end_idx]).date())
+        feat_row["date"] = pd.to_datetime(dates.iloc[end_idx], utc=True, errors="coerce").tz_localize(None)
         feat_row["vol_t"] = float(vol_series.iloc[end_idx])
         rows.append(feat_row)
     if not rows:
         raise ValueError("No window features were created; check lookback window and data quality.")
     out = pd.DataFrame(rows)
-    out["date"] = pd.to_datetime(out["date"])
-    out = out.sort_values("date").drop_duplicates(subset=["date"]).reset_index(drop=True)
+    out["date"] = pd.to_datetime(out["date"], errors="coerce")
+    out = out.sort_values("date").drop_duplicates(subset=["date"], keep="last").reset_index(drop=True)
     feature_cols = [c for c in out.columns if c not in {"date"}]
     out[feature_cols] = out[feature_cols].replace([np.inf, -np.inf], np.nan).fillna(0.0)
     return out
