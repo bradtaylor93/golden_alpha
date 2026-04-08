@@ -1,7 +1,8 @@
-"""CLI entrypoint for running the default experiment config."""
+"""CLI entrypoint for running volatility-shape experiments."""
 
 from __future__ import annotations
 
+import argparse
 from pathlib import Path
 
 from vol_shape_regimes.config import load_experiment_config
@@ -9,7 +10,15 @@ from vol_shape_regimes.pipeline import run_experiment
 
 
 def main() -> None:
-    config_path = Path("/workspace/vol_shape_regimes/configs/experiment_default.yaml")
+    parser = argparse.ArgumentParser(description="Run vol-shape regime experiment")
+    parser.add_argument(
+        "--config",
+        type=str,
+        default="/workspace/vol_shape_regimes/configs/experiment_default.yaml",
+        help="Path to YAML config file",
+    )
+    args = parser.parse_args()
+    config_path = Path(args.config)
     cfg = load_experiment_config(config_path)
     metrics = run_experiment(cfg)
     print("experiment_name:", cfg.experiment_name)
