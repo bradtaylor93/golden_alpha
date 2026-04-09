@@ -77,6 +77,51 @@ UNIVERSE_50 = [
     "AMGN",
 ]
 
+EXTRA_UNIVERSE_40 = [
+    "BLK",
+    "BKNG",
+    "C",
+    "CMCSA",
+    "COP",
+    "DE",
+    "ELV",
+    "GE",
+    "GILD",
+    "IBM",
+    "ISRG",
+    "LMT",
+    "MDT",
+    "MMM",
+    "MO",
+    "MS",
+    "MU",
+    "NOW",
+    "PANW",
+    "PLD",
+    "PM",
+    "PYPL",
+    "RTX",
+    "SBUX",
+    "SCHW",
+    "SPGI",
+    "SYK",
+    "T",
+    "TJX",
+    "TMUS",
+    "UBER",
+    "UNP",
+    "VRTX",
+    "AXP",
+    "CB",
+    "ETN",
+    "INTU",
+    "MDLZ",
+    "PGR",
+    "SO",
+]
+
+UNIVERSE_90 = tuple(dict.fromkeys([*UNIVERSE_50, *EXTRA_UNIVERSE_40]))
+
 
 @dataclass(frozen=True)
 class RobustnessConfig:
@@ -487,7 +532,7 @@ def main() -> None:
 
     cfg = RobustnessConfig()
     vendor = YahooMarketDataVendor()
-    bars = vendor.fetch_bars(UNIVERSE_50, period="3y", interval="1d")
+    bars = vendor.fetch_bars(list(UNIVERSE_90), period="3y", interval="1d")
     if bars.empty:
         raise ValueError("No Yahoo bars returned for requested universe.")
 
@@ -514,7 +559,7 @@ def main() -> None:
     scorecard = _build_signal_vs_luck_scorecard(overall, walkforward, regime_perf, significance, random_test)
 
     summary = {
-        "universe_size_requested": len(UNIVERSE_50),
+        "universe_size_requested": len(UNIVERSE_90),
         "universe_size_fetched": int(bars["asset"].nunique()),
         "start_timestamp": str(panel["timestamp"].min()),
         "end_timestamp": str(panel["timestamp"].max()),
