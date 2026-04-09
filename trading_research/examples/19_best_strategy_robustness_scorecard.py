@@ -189,6 +189,49 @@ def _roundtrip_cost_return(cfg: RobustnessConfig) -> float:
     return total_bps / 10_000.0
 
 
+def _build_benchmark_close_series(vendor: YahooMarketDataVendor) -> pd.Series:
+    bench = vendor.fetch_bars(["SPY"], period="3y", interval="1d")
+    if bench.empty:
+        raise ValueError("No benchmark bars returned for SPY.")
+    b = bench.copy()
+    b["timestamp"] = pd.to_datetime(b["timestamp"], utc=True, errors="coerce")
+    b["close"] = pd.to_numeric(b["close"], errors="coerce")
+    b = b.dropna(subset=["timestamp", "close"]).sort_values("timestamp")
+    if b.empty:
+        raise ValueError("Benchmark SPY data is empty after preprocessing.")
+    return b.drop_duplicates(subset=["timestamp"], keep="last").set_index("timestamp")["close"].astype(float)
+
+
+def _map_benchmark_returns(
+    benchmark_close: pd.Series,
+    entry_ts: pd.Series,
+    exit_ts: pd.Series,
+) -> pd.Series:
+    entry_idx = pd.DatetimeIndex(pd.to_datetime(entry_ts, utc=True, errors="coerce"))
+    exit_idx = pd.DatetimeIndex(pd.to_datetime(exit_ts, utc=True, errors="coerce"))
+    b_entry = benchmark_close.reindex(entry_idx, method="ffill")
+    b_exit = benchmark_close.reindex(exit_idx, method="ffill")
+    out = b_exit.to_numpy() / b_entry.to_numpy() - 1.0
+    return pd.Series(out, index=entry_ts.index, dtype=float)
+
+
+def _attach_benchmark_alpha(trades: pd.DataFrame, benchmark_close: pd.Series) -> pd.DataFrame:
+    if trades.empty:
+        return trades.copy()
+    out = trades.copy()
+    out["benchmark_return"] = _map_benchmark_returns(
+        benchmark_close=benchmark_close,
+        entry_ts=out["entry_timestamp"],
+        exit_ts=out["exit_timestamp"],
+    )
+    out["alpha_return"] = pd.to_numeric(out["net_return"], errors="coerce") - pd.to_numeric(
+        out["benchmark_return"], errors="coerce"
+    )
+    hold = pd.to_numeric(out["hold_days"], errors="coerce")
+    out["daily_alpha_return"] = out["alpha_return"] / hold.replace(0.0, np.nan)
+    return out
+
+
 def _simulate_non_overlapping_trades(asset_df: pd.DataFrame, cfg: RobustnessConfig) -> pd.DataFrame:
     df = asset_df.sort_values("timestamp").reset_index(drop=True)
     trades: list[dict[str, float | str]] = []
@@ -246,6 +289,11 @@ def _summarize_trades(trades: pd.DataFrame) -> dict[str, float]:
             "p05_net_return": float("nan"),
             "cvar10_net_return": float("nan"),
             "worst_net_return": float("nan"),
+            "mean_alpha_return": float("nan"),
+            "win_rate_alpha": float("nan"),
+            "t_stat_alpha": float("nan"),
+            "sharpe_per_trade_alpha": float("nan"),
+            "annualized_sharpe_daily_proxy_alpha": float("nan"),
         }
     r = pd.to_numeric(trades["net_return"], errors="coerce").dropna()
     dlog = pd.to_numeric(trades["daily_log_net_return"], errors="coerce").dropna()
@@ -255,6 +303,21 @@ def _summarize_trades(trades: pd.DataFrame) -> dict[str, float]:
     sharpe_daily = (
         float((dlog.mean() / dlog.std(ddof=1)) * math.sqrt(252.0))
         if len(dlog) > 1 and float(dlog.std(ddof=1)) > 0
+        else float("nan")
+    )
+    alpha = pd.to_numeric(trades.get("alpha_return", pd.Series(index=trades.index, dtype=float)), errors="coerce").dropna()
+    daily_alpha = pd.to_numeric(
+        trades.get("daily_alpha_return", pd.Series(index=trades.index, dtype=float)),
+        errors="coerce",
+    ).dropna()
+    sharpe_alpha = (
+        float(alpha.mean() / alpha.std(ddof=1))
+        if len(alpha) > 1 and float(alpha.std(ddof=1)) > 0
+        else float("nan")
+    )
+    sharpe_alpha_daily = (
+        float((daily_alpha.mean() / daily_alpha.std(ddof=1)) * math.sqrt(252.0))
+        if len(daily_alpha) > 1 and float(daily_alpha.std(ddof=1)) > 0
         else float("nan")
     )
     tail_n = max(1, int(len(r) * 0.10))
@@ -271,6 +334,11 @@ def _summarize_trades(trades: pd.DataFrame) -> dict[str, float]:
         "p05_net_return": float(r.quantile(0.05)),
         "cvar10_net_return": float(sorted_r[:tail_n].mean()),
         "worst_net_return": float(r.min()),
+        "mean_alpha_return": float(alpha.mean()) if len(alpha) else float("nan"),
+        "win_rate_alpha": float((alpha > 0).mean()) if len(alpha) else float("nan"),
+        "t_stat_alpha": _t_stat(alpha) if len(alpha) else float("nan"),
+        "sharpe_per_trade_alpha": sharpe_alpha,
+        "annualized_sharpe_daily_proxy_alpha": sharpe_alpha_daily,
     }
 
 
@@ -401,7 +469,56 @@ def _bootstrap_and_permutation_tests(trades: pd.DataFrame, cfg: RobustnessConfig
     return tests, null_df
 
 
-def _random_entry_permutation_test(test_panel: pd.DataFrame, observed_mean_net: float, cfg: RobustnessConfig) -> tuple[dict[str, float], pd.DataFrame]:
+def _alpha_bootstrap_and_permutation_tests(
+    trades: pd.DataFrame, cfg: RobustnessConfig
+) -> tuple[dict[str, float], pd.DataFrame]:
+    r = pd.to_numeric(trades.get("alpha_return"), errors="coerce").dropna().to_numpy()
+    if len(r) < 5:
+        return {
+            "obs_mean_alpha_return": float("nan"),
+            "alpha_bootstrap_ci_low_95": float("nan"),
+            "alpha_bootstrap_ci_high_95": float("nan"),
+            "alpha_bootstrap_p_mean_le_zero": float("nan"),
+            "alpha_signflip_p_two_sided": float("nan"),
+        }, pd.DataFrame()
+
+    rng = np.random.default_rng(cfg.random_state + 7)
+    obs_mean = float(np.mean(r))
+    n = len(r)
+    boot_means = np.empty(cfg.bootstrap_iterations, dtype=float)
+    for i in range(cfg.bootstrap_iterations):
+        idx = rng.integers(0, n, size=n)
+        boot_means[i] = float(np.mean(r[idx]))
+    ci_low = float(np.quantile(boot_means, 0.025))
+    ci_high = float(np.quantile(boot_means, 0.975))
+    p_boot = float(np.mean(boot_means <= 0.0))
+
+    signflip_null = np.empty(cfg.signflip_iterations, dtype=float)
+    for i in range(cfg.signflip_iterations):
+        signs = rng.choice([-1.0, 1.0], size=n, replace=True)
+        signflip_null[i] = float(np.mean(r * signs))
+    p_signflip = float(np.mean(np.abs(signflip_null) >= abs(obs_mean)))
+
+    max_len = max(len(boot_means), len(signflip_null))
+    boot_series = pd.Series(boot_means, dtype=float).reindex(range(max_len))
+    sign_series = pd.Series(signflip_null, dtype=float).reindex(range(max_len))
+    null_df = pd.DataFrame({"alpha_bootstrap_mean": boot_series, "alpha_signflip_mean": sign_series})
+    out = {
+        "obs_mean_alpha_return": obs_mean,
+        "alpha_bootstrap_ci_low_95": ci_low,
+        "alpha_bootstrap_ci_high_95": ci_high,
+        "alpha_bootstrap_p_mean_le_zero": p_boot,
+        "alpha_signflip_p_two_sided": p_signflip,
+    }
+    return out, null_df
+
+
+def _market_neutral_random_entry_permutation_test(
+    test_panel: pd.DataFrame,
+    benchmark_close: pd.Series,
+    observed_mean_alpha: float,
+    cfg: RobustnessConfig,
+) -> tuple[dict[str, float], pd.DataFrame]:
     rng = np.random.default_rng(cfg.random_state + 101)
     rt_cost = _roundtrip_cost_return(cfg)
     horizon = cfg.fixed_horizon_days
@@ -414,7 +531,7 @@ def _random_entry_permutation_test(test_panel: pd.DataFrame, observed_mean_net: 
 
     null_means = np.empty(cfg.random_entry_iterations, dtype=float)
     for i in range(cfg.random_entry_iterations):
-        sim_returns: list[float] = []
+        sim_alpha_returns: list[float] = []
         for asset, g in test_panel.groupby("asset", sort=False):
             n_entries = int(counts_map.get(asset, 0))
             if n_entries <= 0:
@@ -431,22 +548,30 @@ def _random_entry_permutation_test(test_panel: pd.DataFrame, observed_mean_net: 
             exit_px = pd.to_numeric(df.loc[exit_idx, "close"], errors="coerce").to_numpy()
             gross = exit_px / entry_px - 1.0
             net = gross - rt_cost
-            sim_returns.extend(net[np.isfinite(net)].tolist())
-        null_means[i] = float(np.mean(sim_returns)) if sim_returns else float("nan")
+            entry_ts = pd.to_datetime(df.loc[picks, "timestamp"], utc=True, errors="coerce")
+            exit_ts = pd.to_datetime(df.loc[exit_idx, "timestamp"], utc=True, errors="coerce")
+            bench = _map_benchmark_returns(
+                benchmark_close=benchmark_close,
+                entry_ts=entry_ts,
+                exit_ts=exit_ts,
+            ).to_numpy()
+            alpha = net - bench
+            sim_alpha_returns.extend(alpha[np.isfinite(alpha)].tolist())
+        null_means[i] = float(np.mean(sim_alpha_returns)) if sim_alpha_returns else float("nan")
 
     null = pd.Series(null_means).dropna()
-    p_right = float(np.mean(null >= observed_mean_net)) if len(null) else float("nan")
-    p_left = float(np.mean(null <= observed_mean_net)) if len(null) else float("nan")
+    p_right = float(np.mean(null >= observed_mean_alpha)) if len(null) else float("nan")
+    p_left = float(np.mean(null <= observed_mean_alpha)) if len(null) else float("nan")
     out = {
-        "random_entry_null_mean": float(null.mean()) if len(null) else float("nan"),
-        "random_entry_null_std": float(null.std(ddof=1)) if len(null) > 1 else float("nan"),
-        "random_entry_p_right": p_right,
-        "random_entry_p_left": p_left,
-        "random_entry_effect_zscore": float((observed_mean_net - null.mean()) / null.std(ddof=1))
+        "market_neutral_random_entry_null_mean_alpha": float(null.mean()) if len(null) else float("nan"),
+        "market_neutral_random_entry_null_std_alpha": float(null.std(ddof=1)) if len(null) > 1 else float("nan"),
+        "market_neutral_random_entry_p_right": p_right,
+        "market_neutral_random_entry_p_left": p_left,
+        "market_neutral_random_entry_effect_zscore": float((observed_mean_alpha - null.mean()) / null.std(ddof=1))
         if len(null) > 1 and float(null.std(ddof=1)) > 0
         else float("nan"),
     }
-    return out, pd.DataFrame({"random_entry_null_mean_return": null.to_numpy()})
+    return out, pd.DataFrame({"market_neutral_random_entry_null_mean_alpha": null.to_numpy()})
 
 
 def _build_signal_vs_luck_scorecard(
@@ -454,7 +579,8 @@ def _build_signal_vs_luck_scorecard(
     walkforward: pd.DataFrame,
     regime_perf: pd.DataFrame,
     significance: dict[str, float],
-    random_test: dict[str, float],
+    alpha_significance: dict[str, float],
+    market_neutral_random_test: dict[str, float],
 ) -> dict[str, object]:
     checks: list[tuple[str, bool, str]] = []
 
@@ -476,14 +602,32 @@ def _build_signal_vs_luck_scorecard(
     p_sign = float(significance.get("signflip_p_two_sided", float("nan")))
     checks.append(("Sign-flip p(two-sided) < 0.05", bool(np.isfinite(p_sign) and p_sign < 0.05), f"{p_sign:.4f}"))
 
-    p_rand = float(random_test.get("random_entry_p_right", float("nan")))
-    checks.append(("Better than random-entry null (p_right < 0.05)", bool(np.isfinite(p_rand) and p_rand < 0.05), f"{p_rand:.4f}"))
-    rand_mean = float(random_test.get("random_entry_null_mean", float("nan")))
+    mean_alpha = float(overall.get("mean_alpha_return", float("nan")))
+    checks.append(("Mean alpha return > 0", bool(np.isfinite(mean_alpha) and mean_alpha > 0), f"{mean_alpha:.6f}"))
+
+    alpha_p_boot = float(alpha_significance.get("alpha_bootstrap_p_mean_le_zero", float("nan")))
     checks.append(
         (
-            "Mean net return > random-entry null mean",
-            bool(np.isfinite(mret) and np.isfinite(rand_mean) and mret > rand_mean),
-            f"obs={mret:.6f}, null={rand_mean:.6f}",
+            "Alpha bootstrap p(mean<=0) < 0.05",
+            bool(np.isfinite(alpha_p_boot) and alpha_p_boot < 0.05),
+            f"{alpha_p_boot:.4f}",
+        )
+    )
+
+    p_rand = float(market_neutral_random_test.get("market_neutral_random_entry_p_right", float("nan")))
+    checks.append(
+        (
+            "Better than beta-matched random-entry null (p_right < 0.05)",
+            bool(np.isfinite(p_rand) and p_rand < 0.05),
+            f"{p_rand:.4f}",
+        )
+    )
+    rand_mean = float(market_neutral_random_test.get("market_neutral_random_entry_null_mean_alpha", float("nan")))
+    checks.append(
+        (
+            "Mean alpha return > beta-matched random-entry null mean",
+            bool(np.isfinite(mean_alpha) and np.isfinite(rand_mean) and mean_alpha > rand_mean),
+            f"obs={mean_alpha:.6f}, null={rand_mean:.6f}",
         )
     )
 
@@ -507,7 +651,7 @@ def _build_signal_vs_luck_scorecard(
     total = int(len(checks))
     score = passed / total if total > 0 else float("nan")
     critical_random_check = bool(np.isfinite(p_rand) and p_rand < 0.05)
-    critical_alpha_check = bool(np.isfinite(mret) and np.isfinite(rand_mean) and mret > rand_mean)
+    critical_alpha_check = bool(np.isfinite(mean_alpha) and np.isfinite(rand_mean) and mean_alpha > rand_mean)
 
     if score >= 0.75 and critical_random_check and critical_alpha_check:
         verdict = "likely_real_signal"
@@ -533,6 +677,7 @@ def main() -> None:
     cfg = RobustnessConfig()
     vendor = YahooMarketDataVendor()
     bars = vendor.fetch_bars(list(UNIVERSE_90), period="3y", interval="1d")
+    benchmark_close = _build_benchmark_close_series(vendor)
     if bars.empty:
         raise ValueError("No Yahoo bars returned for requested universe.")
 
@@ -543,6 +688,7 @@ def main() -> None:
     for _, g in test.groupby("asset", sort=False):
         all_trades.append(_simulate_non_overlapping_trades(g, cfg))
     trades = pd.concat(all_trades, ignore_index=True) if all_trades else pd.DataFrame()
+    trades = _attach_benchmark_alpha(trades, benchmark_close=benchmark_close)
     overall = _summarize_trades(trades)
 
     walkforward = _walkforward_yearly_purged(test, cfg)
@@ -550,13 +696,22 @@ def main() -> None:
     regime_perf = _regime_trade_performance(trades, regimes)
 
     significance, null_boot_sign = _bootstrap_and_permutation_tests(trades, cfg)
-    random_test, null_random = _random_entry_permutation_test(
+    alpha_significance, null_alpha_boot_sign = _alpha_bootstrap_and_permutation_tests(trades, cfg)
+    market_neutral_random_test, null_random = _market_neutral_random_entry_permutation_test(
         test,
-        observed_mean_net=float(overall.get("mean_net_return", float("nan"))),
+        benchmark_close=benchmark_close,
+        observed_mean_alpha=float(overall.get("mean_alpha_return", float("nan"))),
         cfg=cfg,
     )
 
-    scorecard = _build_signal_vs_luck_scorecard(overall, walkforward, regime_perf, significance, random_test)
+    scorecard = _build_signal_vs_luck_scorecard(
+        overall,
+        walkforward,
+        regime_perf,
+        significance,
+        alpha_significance,
+        market_neutral_random_test,
+    )
 
     summary = {
         "universe_size_requested": len(UNIVERSE_90),
@@ -573,7 +728,7 @@ def main() -> None:
             "roundtrip_cost_return": _roundtrip_cost_return(cfg),
         },
         "overall": overall,
-        "significance": {**significance, **random_test},
+        "significance": {**significance, **alpha_significance, **market_neutral_random_test},
         "scorecard": scorecard,
     }
 
@@ -581,7 +736,8 @@ def main() -> None:
     walkforward.to_csv(reports_dir / "walkforward_yearly_purged.csv", index=False)
     regime_perf.to_csv(reports_dir / "regime_performance.csv", index=False)
     null_boot_sign.to_csv(reports_dir / "null_bootstrap_signflip.csv", index=False)
-    null_random.to_csv(reports_dir / "null_random_entry.csv", index=False)
+    null_alpha_boot_sign.to_csv(reports_dir / "null_alpha_bootstrap_signflip.csv", index=False)
+    null_random.to_csv(reports_dir / "null_market_neutral_random_entry.csv", index=False)
     (reports_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     (reports_dir / "scorecard.json").write_text(json.dumps(scorecard, indent=2), encoding="utf-8")
 
@@ -589,7 +745,7 @@ def main() -> None:
     print("universe fetched:", summary["universe_size_fetched"])
     print("test rows:", summary["test_rows"], "split timestamp:", summary["split_timestamp"])
     print("overall:", json.dumps(overall, indent=2))
-    print("significance:", json.dumps({**significance, **random_test}, indent=2))
+    print("significance:", json.dumps({**significance, **alpha_significance, **market_neutral_random_test}, indent=2))
     print("scorecard:", json.dumps(scorecard, indent=2))
 
 
