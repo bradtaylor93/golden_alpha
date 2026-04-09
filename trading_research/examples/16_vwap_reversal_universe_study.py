@@ -238,10 +238,12 @@ def _evaluate_metric(
     bot_rate = float(scored.loc[bot_mask, "reversal_event"].mean()) if bot_mask.any() else float("nan")
 
     top_returns = scored.loc[top_mask, "contrarian_forward_return"]
+    bot_returns = scored.loc[bot_mask, "contrarian_forward_return"]
     auc = _rank_auc(scored["reversal_event"], scored["score_norm"])
     effective_auc = max(auc, 1.0 - auc) if not math.isnan(auc) else float("nan")
     signal_side = "top_decile" if (math.isnan(top_rate) or math.isnan(bot_rate) or top_rate >= bot_rate) else "bottom_decile"
     selected_rate = top_rate if signal_side == "top_decile" else bot_rate
+    preferred_returns = top_returns if signal_side == "top_decile" else bot_returns
     rows = {
         "metric": score_col,
         "n_test": float(len(scored)),
@@ -255,9 +257,13 @@ def _evaluate_metric(
         "preferred_signal_side": signal_side,
         "preferred_signal_reversal_rate": selected_rate,
         "n_top_decile": float(int(top_mask.sum())),
+        "n_bottom_decile": float(int(bot_mask.sum())),
         "contrarian_mean_return_top_decile": float(top_returns.mean()) if len(top_returns) else float("nan"),
         "contrarian_win_rate_top_decile": float((top_returns > 0).mean()) if len(top_returns) else float("nan"),
         "contrarian_tstat_top_decile": _t_stat(top_returns),
+        "contrarian_mean_return_preferred_side": float(preferred_returns.mean()) if len(preferred_returns) else float("nan"),
+        "contrarian_win_rate_preferred_side": float((preferred_returns > 0).mean()) if len(preferred_returns) else float("nan"),
+        "contrarian_tstat_preferred_side": _t_stat(preferred_returns),
     }
 
     # Asset-level AUC on OOS for robustness.
@@ -313,6 +319,8 @@ def main() -> None:
         else pd.DataFrame(columns=["metric", "mean_asset_auc", "median_asset_auc", "pct_assets_auc_gt_0_5", "n_assets"])
     )
 
+    metric_effective_sorted = metric_df.sort_values("auc_effective_abs", ascending=False).reset_index(drop=True)
+
     summary = {
         "universe_size_requested": len(UNIVERSE_50),
         "universe_size_fetched": int(bars["asset"].nunique()),
@@ -326,6 +334,18 @@ def main() -> None:
         "trend_threshold_abs_return": cfg.trend_threshold,
         "best_metric_by_auc": str(metric_df.iloc[0]["metric"]) if not metric_df.empty else "n/a",
         "best_metric_auc": float(metric_df.iloc[0]["auc_reversal"]) if not metric_df.empty else float("nan"),
+        "best_metric_by_effective_auc": str(metric_effective_sorted.iloc[0]["metric"])
+        if not metric_effective_sorted.empty
+        else "n/a",
+        "best_metric_effective_auc": float(metric_effective_sorted.iloc[0]["auc_effective_abs"])
+        if not metric_effective_sorted.empty
+        else float("nan"),
+        "best_metric_preferred_side": str(metric_effective_sorted.iloc[0]["preferred_signal_side"])
+        if not metric_effective_sorted.empty
+        else "n/a",
+        "best_metric_preferred_side_reversal_rate": float(metric_effective_sorted.iloc[0]["preferred_signal_reversal_rate"])
+        if not metric_effective_sorted.empty
+        else float("nan"),
     }
 
     panel.to_csv(reports_dir / "panel_features.csv", index=False)
