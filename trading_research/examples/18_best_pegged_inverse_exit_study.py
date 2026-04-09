@@ -81,6 +81,7 @@ class ExitStudyConfig:
     test_ratio: float = 0.30
     peg_window_days: int = 21
     fixed_horizon_days: int = 63
+    trailing_stop_pct: float = 0.10
 
 
 def _t_stat(values: pd.Series) -> float:
@@ -144,9 +145,10 @@ def _simulate_non_overlapping_trades(
     *,
     mode: str,
     fixed_horizon_days: int,
+    use_fixed_horizon: bool,
+    use_inverse_exit: bool,
+    trailing_stop_pct: float | None,
 ) -> pd.DataFrame:
-    if mode not in {"fixed", "inverse"}:
-        raise ValueError(f"Unsupported mode: {mode}")
     df = asset_df.sort_values("timestamp").reset_index(drop=True)
     trades: list[dict[str, float | str]] = []
 
@@ -160,13 +162,35 @@ def _simulate_non_overlapping_trades(
         entry_idx = i
         entry_px = float(df.loc[entry_idx, "close"])
         entry_ts = pd.Timestamp(df.loc[entry_idx, "timestamp"])
+        max_exit_idx = min(entry_idx + fixed_horizon_days, n - 1) if use_fixed_horizon else n - 1
 
-        if mode == "fixed":
-            exit_idx = min(entry_idx + fixed_horizon_days, n - 1)
-        else:
-            after = df.loc[entry_idx + 1 :, "inverse_exit"]
-            hits = after[after == 1]
-            exit_idx = int(hits.index[0]) if not hits.empty else n - 1
+        peak_px = entry_px
+        exit_idx = max_exit_idx
+        exit_reason = "fixed_horizon" if use_fixed_horizon else "end_of_sample"
+        found_exit = False
+
+        for j in range(entry_idx + 1, max_exit_idx + 1):
+            px_j = float(df.loc[j, "close"])
+            if px_j > peak_px:
+                peak_px = px_j
+
+            trailing_hit = False
+            if trailing_stop_pct is not None and trailing_stop_pct > 0:
+                stop_level = peak_px * (1.0 - trailing_stop_pct)
+                trailing_hit = px_j <= stop_level
+
+            inverse_hit = use_inverse_exit and int(df.loc[j, "inverse_exit"]) == 1
+
+            if trailing_hit or inverse_hit:
+                exit_idx = j
+                if trailing_hit and inverse_hit:
+                    exit_reason = "trailing_stop_and_inverse_cross"
+                elif trailing_hit:
+                    exit_reason = "trailing_stop"
+                else:
+                    exit_reason = "inverse_cross"
+                found_exit = True
+                break
 
         if exit_idx <= entry_idx:
             i += 1
@@ -189,7 +213,7 @@ def _simulate_non_overlapping_trades(
                 "trade_return": float(ret),
                 "daily_log_return": float(daily_log),
                 "mode": mode,
-                "exit_reason": "fixed_horizon" if mode == "fixed" else ("inverse_cross" if exit_idx < n - 1 else "end_of_sample"),
+                "exit_reason": exit_reason if found_exit or use_fixed_horizon else "end_of_sample",
             }
         )
         i = exit_idx + 1
@@ -209,11 +233,16 @@ def _summarize(trades: pd.DataFrame) -> dict[str, float | str]:
             "median_hold_days": float("nan"),
             "annualized_log_return_proxy": float("nan"),
             "compound_return_seq_proxy": float("nan"),
+            "p05_trade_return": float("nan"),
+            "cvar10_trade_return": float("nan"),
+            "worst_trade_return": float("nan"),
         }
 
     r = pd.to_numeric(trades["trade_return"], errors="coerce").dropna()
     h = pd.to_numeric(trades["hold_days"], errors="coerce").dropna()
     dlog = pd.to_numeric(trades["daily_log_return"], errors="coerce").dropna()
+    q10 = float(r.quantile(0.10)) if not r.empty else float("nan")
+    cvar10 = float(r[r <= q10].mean()) if not r.empty else float("nan")
     compound = float((1.0 + r).prod() - 1.0) if not r.empty else float("nan")
     ann_log = float(np.exp(dlog.mean() * 252.0) - 1.0) if not dlog.empty else float("nan")
     return {
@@ -226,6 +255,9 @@ def _summarize(trades: pd.DataFrame) -> dict[str, float | str]:
         "median_hold_days": float(h.median()) if not h.empty else float("nan"),
         "annualized_log_return_proxy": ann_log,
         "compound_return_seq_proxy": compound,
+        "p05_trade_return": float(r.quantile(0.05)) if not r.empty else float("nan"),
+        "cvar10_trade_return": cvar10,
+        "worst_trade_return": float(r.min()) if not r.empty else float("nan"),
     }
 
 
@@ -258,6 +290,17 @@ def _asset_level_comparison(fixed: pd.DataFrame, inverse: pd.DataFrame) -> pd.Da
     return joined.sort_values("delta_mean_ret_inverse_minus_fixed", ascending=False).reset_index(drop=True)
 
 
+def _slugify(name: str) -> str:
+    return (
+        name.lower()
+        .replace(" ", "_")
+        .replace("-", "_")
+        .replace("/", "_")
+        .replace("%", "pct")
+        .replace("__", "_")
+    )
+
+
 def main() -> None:
     out_root = Path("trading_research/examples/_output/18_best_pegged_inverse_exit_study")
     reports_dir = out_root / "reports"
@@ -272,36 +315,95 @@ def main() -> None:
     panel = _build_panel(bars, cfg)
     train, test, split_ts = _split_frame(panel, cfg.test_ratio)
 
-    fixed_trades: list[pd.DataFrame] = []
-    inverse_trades: list[pd.DataFrame] = []
-    for _, g in test.groupby("asset", sort=False):
-        fixed_trades.append(_simulate_non_overlapping_trades(g, mode="fixed", fixed_horizon_days=cfg.fixed_horizon_days))
-        inverse_trades.append(_simulate_non_overlapping_trades(g, mode="inverse", fixed_horizon_days=cfg.fixed_horizon_days))
-    fixed_df = pd.concat(fixed_trades, ignore_index=True) if fixed_trades else pd.DataFrame()
-    inverse_df = pd.concat(inverse_trades, ignore_index=True) if inverse_trades else pd.DataFrame()
+    strategy_defs = [
+        {
+            "name": "fixed_horizon_63d",
+            "use_fixed_horizon": True,
+            "use_inverse_exit": False,
+            "trailing_stop_pct": None,
+        },
+        {
+            "name": "inverse_exit_cross_below_1m_low",
+            "use_fixed_horizon": False,
+            "use_inverse_exit": True,
+            "trailing_stop_pct": None,
+        },
+        {
+            "name": f"fixed_horizon_63d_with_trailing_{int(cfg.trailing_stop_pct*100)}pct",
+            "use_fixed_horizon": True,
+            "use_inverse_exit": False,
+            "trailing_stop_pct": cfg.trailing_stop_pct,
+        },
+        {
+            "name": f"inverse_exit_with_trailing_{int(cfg.trailing_stop_pct*100)}pct",
+            "use_fixed_horizon": False,
+            "use_inverse_exit": True,
+            "trailing_stop_pct": cfg.trailing_stop_pct,
+        },
+    ]
 
-    fixed_summary = _summarize(fixed_df)
-    inverse_summary = _summarize(inverse_df)
+    strategy_trades: dict[str, pd.DataFrame] = {}
+    summary_rows: list[dict[str, float | str]] = []
+    for sdef in strategy_defs:
+        frames: list[pd.DataFrame] = []
+        for _, g in test.groupby("asset", sort=False):
+            frames.append(
+                _simulate_non_overlapping_trades(
+                    g,
+                    mode=str(sdef["name"]),
+                    fixed_horizon_days=cfg.fixed_horizon_days,
+                    use_fixed_horizon=bool(sdef["use_fixed_horizon"]),
+                    use_inverse_exit=bool(sdef["use_inverse_exit"]),
+                    trailing_stop_pct=sdef["trailing_stop_pct"],
+                )
+            )
+        trades_df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        strategy_trades[str(sdef["name"])] = trades_df
+        summary_rows.append({"strategy": str(sdef["name"]), **_summarize(trades_df)})
 
-    comparison = pd.DataFrame(
-        [
-            {"strategy": "fixed_horizon_63d", **fixed_summary},
-            {"strategy": "inverse_exit_cross_below_1m_low", **inverse_summary},
-        ]
+    comparison = pd.DataFrame(summary_rows)
+    fixed_summary = comparison.loc[comparison["strategy"] == "fixed_horizon_63d"].iloc[0].to_dict()
+    inverse_summary = comparison.loc[comparison["strategy"] == "inverse_exit_cross_below_1m_low"].iloc[0].to_dict()
+    fixed_trailing_summary = (
+        comparison.loc[
+            comparison["strategy"] == f"fixed_horizon_63d_with_trailing_{int(cfg.trailing_stop_pct*100)}pct"
+        ].iloc[0].to_dict()
+    )
+    inverse_trailing_summary = (
+        comparison.loc[
+            comparison["strategy"] == f"inverse_exit_with_trailing_{int(cfg.trailing_stop_pct*100)}pct"
+        ].iloc[0].to_dict()
     )
 
     uplift = {
         "delta_mean_trade_return_inverse_minus_fixed": float(
-            inverse_summary["mean_trade_return"] - fixed_summary["mean_trade_return"]
+            float(inverse_summary["mean_trade_return"]) - float(fixed_summary["mean_trade_return"])
         ),
-        "delta_win_rate_inverse_minus_fixed": float(inverse_summary["win_rate"] - fixed_summary["win_rate"]),
+        "delta_win_rate_inverse_minus_fixed": float(float(inverse_summary["win_rate"]) - float(fixed_summary["win_rate"])),
         "delta_t_stat_inverse_minus_fixed": float(
-            inverse_summary["t_stat_trade_return"] - fixed_summary["t_stat_trade_return"]
+            float(inverse_summary["t_stat_trade_return"]) - float(fixed_summary["t_stat_trade_return"])
         ),
         "delta_annualized_log_return_proxy_inverse_minus_fixed": float(
-            inverse_summary["annualized_log_return_proxy"] - fixed_summary["annualized_log_return_proxy"]
+            float(inverse_summary["annualized_log_return_proxy"]) - float(fixed_summary["annualized_log_return_proxy"])
+        ),
+        "delta_mean_trade_return_fixed_trailing_minus_fixed": float(
+            float(fixed_trailing_summary["mean_trade_return"]) - float(fixed_summary["mean_trade_return"])
+        ),
+        "delta_mean_trade_return_inverse_trailing_minus_inverse": float(
+            float(inverse_trailing_summary["mean_trade_return"]) - float(inverse_summary["mean_trade_return"])
+        ),
+        "delta_win_rate_fixed_trailing_minus_fixed": float(
+            float(fixed_trailing_summary["win_rate"]) - float(fixed_summary["win_rate"])
+        ),
+        "delta_win_rate_inverse_trailing_minus_inverse": float(
+            float(inverse_trailing_summary["win_rate"]) - float(inverse_summary["win_rate"])
         ),
     }
+
+    fixed_df = strategy_trades["fixed_horizon_63d"]
+    inverse_df = strategy_trades["inverse_exit_cross_below_1m_low"]
+    fixed_trailing_df = strategy_trades[f"fixed_horizon_63d_with_trailing_{int(cfg.trailing_stop_pct*100)}pct"]
+    inverse_trailing_df = strategy_trades[f"inverse_exit_with_trailing_{int(cfg.trailing_stop_pct*100)}pct"]
 
     asset_cmp = _asset_level_comparison(fixed_df, inverse_df)
     if not asset_cmp.empty:
@@ -310,6 +412,41 @@ def main() -> None:
         )
     else:
         uplift["pct_assets_inverse_better_mean_return"] = float("nan")
+
+    asset_cmp_fixed_trailing = _asset_level_comparison(fixed_df, fixed_trailing_df).rename(
+        columns={
+            "n_trades_inverse": "n_trades_fixed_trailing",
+            "mean_ret_inverse": "mean_ret_fixed_trailing",
+            "win_rate_inverse": "win_rate_fixed_trailing",
+            "delta_mean_ret_inverse_minus_fixed": "delta_mean_ret_fixed_trailing_minus_fixed",
+            "delta_win_rate_inverse_minus_fixed": "delta_win_rate_fixed_trailing_minus_fixed",
+        }
+    )
+    asset_cmp_inverse_trailing = _asset_level_comparison(inverse_df, inverse_trailing_df).rename(
+        columns={
+            "n_trades_fixed": "n_trades_inverse",
+            "mean_ret_fixed": "mean_ret_inverse",
+            "win_rate_fixed": "win_rate_inverse",
+            "n_trades_inverse": "n_trades_inverse_trailing",
+            "mean_ret_inverse": "mean_ret_inverse_trailing",
+            "win_rate_inverse": "win_rate_inverse_trailing",
+            "delta_mean_ret_inverse_minus_fixed": "delta_mean_ret_inverse_trailing_minus_inverse",
+            "delta_win_rate_inverse_minus_fixed": "delta_win_rate_inverse_trailing_minus_inverse",
+        }
+    )
+
+    if not asset_cmp_fixed_trailing.empty:
+        uplift["pct_assets_fixed_trailing_better_mean_return"] = float(
+            (asset_cmp_fixed_trailing["delta_mean_ret_fixed_trailing_minus_fixed"] > 0).mean()
+        )
+    else:
+        uplift["pct_assets_fixed_trailing_better_mean_return"] = float("nan")
+    if not asset_cmp_inverse_trailing.empty:
+        uplift["pct_assets_inverse_trailing_better_mean_return"] = float(
+            (asset_cmp_inverse_trailing["delta_mean_ret_inverse_trailing_minus_inverse"] > 0).mean()
+        )
+    else:
+        uplift["pct_assets_inverse_trailing_better_mean_return"] = float("nan")
 
     summary = {
         "universe_size_requested": len(UNIVERSE_50),
@@ -322,13 +459,17 @@ def main() -> None:
         "entry_rule": "long_cross_above_1m_pegged_high",
         "fixed_exit_rule": f"exit_after_{cfg.fixed_horizon_days}_trading_days",
         "inverse_exit_rule": "exit_on_cross_below_1m_pegged_low_or_end_of_sample",
+        "trailing_stop_pct": cfg.trailing_stop_pct,
         "uplift": uplift,
     }
 
-    fixed_df.to_csv(reports_dir / "trades_fixed_horizon.csv", index=False)
-    inverse_df.to_csv(reports_dir / "trades_inverse_exit.csv", index=False)
+    for strategy_name, trades_df in strategy_trades.items():
+        slug = _slugify(strategy_name)
+        trades_df.to_csv(reports_dir / f"trades_{slug}.csv", index=False)
     comparison.to_csv(reports_dir / "strategy_comparison.csv", index=False)
     asset_cmp.to_csv(reports_dir / "asset_level_comparison.csv", index=False)
+    asset_cmp_fixed_trailing.to_csv(reports_dir / "asset_level_fixed_vs_fixed_trailing.csv", index=False)
+    asset_cmp_inverse_trailing.to_csv(reports_dir / "asset_level_inverse_vs_inverse_trailing.csv", index=False)
     (reports_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     print("reports:", reports_dir.resolve())
