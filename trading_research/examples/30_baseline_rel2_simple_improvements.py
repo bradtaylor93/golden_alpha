@@ -608,7 +608,8 @@ def _portfolio_metrics(daily: pd.DataFrame, trades: pd.DataFrame) -> dict[str, f
         strength = pd.to_numeric(trades["signal_strength"], errors="coerce").abs()
     else:
         strength = pd.Series(1.0, index=trades.index, dtype=float)
-    hold = pd.to_numeric(trades.get("hold_days"), errors="coerce").clip(lower=1.0)
+    hold_raw = pd.Series(pd.to_numeric(trades.get("hold_days"), errors="coerce"), index=trades.index, dtype=float)
+    hold = hold_raw.where(hold_raw >= 1.0, 1.0)
     trade_w = strength * hold
     mask = alpha_trade.notna() & trade_w.notna() & (trade_w > 0)
     alpha_trade_weighted_proxy = (
