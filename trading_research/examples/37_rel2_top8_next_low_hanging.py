@@ -650,17 +650,6 @@ def _simulate_fold(
             spy_r = float(spy_ret.iloc[i]) if np.isfinite(spy_ret.iloc[i]) else 0.0
 
             hedge_beta = 0.0
-            if exp.use_reentry_cooldown and False:  # placeholder to keep shape stable if toggles evolve
-                pass
-            # Optional conservative beta hedge v2.
-            if exp.use_beta_hedge_v2:
-                # Do a simple contemporaneous conditional hedge proxy based on market state.
-                ts_i = pd.Timestamp(dates[i])
-                vol_now = float(spy_vol21.loc[ts_i]) if ts_i in spy_vol21.index else float("nan")
-                is_bear = bool(float(spy_up.loc[ts_i]) <= 0.5) if ts_i in spy_up.index else False
-                if (is_bear or (np.isfinite(vol_now) and np.isfinite(train_spy_vol_median) and vol_now > train_spy_vol_median)):
-                    hedge_beta = cfg.beta_cap_v2
-                net = net - hedge_beta * spy_r
             alpha = net - max(0.0, 1.0 - hedge_beta) * spy_r
 
             rows.append(
