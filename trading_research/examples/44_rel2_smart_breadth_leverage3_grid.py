@@ -210,29 +210,66 @@ UNIVERSE_170 = tuple(
 )
 
 
-def _load_sp500_universe(max_assets: int) -> tuple[str, ...]:
-    """Load S&P 500 symbols, fallback to static universe."""
-    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-    try:
-        tables = pd.read_html(url)
-        if not tables:
-            raise ValueError("No tables found on S&P 500 page.")
+def _extract_symbols_from_tables(tables: list[pd.DataFrame]) -> list[str]:
+    out: list[str] = []
+    for table in tables:
         symbols_col = None
-        for col in tables[0].columns:
-            if str(col).strip().lower() in {"symbol", "ticker", "ticker symbol"}:
+        for col in table.columns:
+            col_name = str(col).strip().lower()
+            if "symbol" in col_name or "ticker" in col_name:
                 symbols_col = col
                 break
         if symbols_col is None:
-            symbols_col = tables[0].columns[0]
-        raw = tables[0][symbols_col].astype(str).tolist()
+            continue
+        raw = table[symbols_col].astype(str).tolist()
         # Yahoo convention uses '-' for share class tickers.
         cleaned = [s.strip().upper().replace(".", "-") for s in raw if s and s != "nan"]
-        if not cleaned:
-            raise ValueError("No symbols parsed from S&P 500 table.")
-        uniq = tuple(dict.fromkeys(cleaned))
-        return uniq[: max(1, int(max_assets))]
-    except Exception:
+        # Guard against non-ticker text in loose tables.
+        cleaned = [s for s in cleaned if 1 <= len(s) <= 8 and " " not in s]
+        out.extend(cleaned)
+    return out
+
+
+def _load_broad_us_universe(max_assets: int) -> tuple[str, ...]:
+    """Load broad US equity universe (S&P 500/400/600 + Nasdaq-100).
+
+    Uses CSV data sources first (no optional HTML parser dependency).
+    """
+    csv_urls = (
+        "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv",
+        "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv",
+        "https://raw.githubusercontent.com/nasdaq/nasdaq100/master/data/constituents.csv",
+        "https://raw.githubusercontent.com/rreichel3/US-Stock-Symbols/main/all/all_tickers.txt",
+    )
+    all_symbols: list[str] = []
+    for url in csv_urls:
+        try:
+            if url.endswith(".txt"):
+                df = pd.read_csv(url, header=None)
+                raw = df.iloc[:, 0].astype(str).tolist()
+            else:
+                df = pd.read_csv(url)
+                symbol_col = None
+                for c in df.columns:
+                    name = str(c).strip().lower()
+                    if "symbol" in name or "ticker" in name:
+                        symbol_col = c
+                        break
+                if symbol_col is None:
+                    continue
+                raw = df[symbol_col].astype(str).tolist()
+            cleaned = [s.strip().upper().replace(".", "-") for s in raw if s and s != "nan"]
+            # Keep plain US-style tickers and share class variants.
+            cleaned = [s for s in cleaned if 1 <= len(s) <= 8 and " " not in s and s.replace("-", "").isalnum()]
+            all_symbols.extend(cleaned)
+        except Exception:
+            continue
+    # Stable fallback add-on.
+    all_symbols.extend(list(UNIVERSE_170))
+    uniq = tuple(dict.fromkeys(all_symbols))
+    if not uniq:
         return tuple(list(UNIVERSE_170)[: max(1, int(max_assets))])
+    return uniq[: max(1, int(max_assets))]
 
 
 @dataclass(frozen=True)
@@ -289,7 +326,7 @@ class Config:
     dynamic_cluster_abs_weight_cap_stressed: float = 0.54
     dynamic_cluster_abs_weight_cap_calm: float = 0.90
     # Smart-breadth controls.
-    max_universe_assets: int = 505
+    max_universe_assets: int = 350
     asset_efficacy_horizon_days: int = 21
     asset_efficacy_min_obs: int = 120
     asset_efficacy_quantile: float = 0.55
@@ -1189,7 +1226,7 @@ def main() -> None:
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = Config()
-    requested_universe = _load_sp500_universe(max_assets=cfg.max_universe_assets)
+    requested_universe = _load_broad_us_universe(max_assets=cfg.max_universe_assets)
     vendor = YahooMarketDataVendor()
     bars = vendor.fetch_bars(list(requested_universe), period=cfg.period, interval=cfg.interval)
     spy_df = vendor.fetch_bars(["SPY"], period=cfg.period, interval=cfg.interval)[["timestamp", "close"]]
