@@ -228,6 +228,42 @@ EXIT_SPECS: tuple[ExitSpec, ...] = (
         bear_trailing_stop_pct=0.10,
     ),
     ExitSpec(
+        name="rel2_top8_trend_h84_b42_bear_trail08",
+        bull_hold_days=84,
+        bear_hold_days=42,
+        bear_trailing_stop_pct=0.08,
+    ),
+    ExitSpec(
+        name="rel2_top8_trend_h84_b42_bear_trail12",
+        bull_hold_days=84,
+        bear_hold_days=42,
+        bear_trailing_stop_pct=0.12,
+    ),
+    ExitSpec(
+        name="rel2_top8_trend_h70_b42_bear_trail10",
+        bull_hold_days=70,
+        bear_hold_days=42,
+        bear_trailing_stop_pct=0.10,
+    ),
+    ExitSpec(
+        name="rel2_top8_trend_h98_b42_bear_trail10",
+        bull_hold_days=98,
+        bear_hold_days=42,
+        bear_trailing_stop_pct=0.10,
+    ),
+    ExitSpec(
+        name="rel2_top8_trend_h84_b35_bear_trail10",
+        bull_hold_days=84,
+        bear_hold_days=35,
+        bear_trailing_stop_pct=0.10,
+    ),
+    ExitSpec(
+        name="rel2_top8_trend_h84_b49_bear_trail10",
+        bull_hold_days=84,
+        bear_hold_days=49,
+        bear_trailing_stop_pct=0.10,
+    ),
+    ExitSpec(
         name="rel2_top8_trend_h63_b42_bear_trail08",
         bull_hold_days=63,
         bear_hold_days=42,
