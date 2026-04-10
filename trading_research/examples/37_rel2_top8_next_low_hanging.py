@@ -239,13 +239,20 @@ class Config:
     # New low-hanging fruits.
     liquidity_min_rank_pct: float = 0.30
     crowding_max_new_entries_per_day: int = 25
+    quality_cap_max_new_entries_per_day: int = 20
     vol_trail_mult: float = 3.0
     vol_trail_min: float = 0.06
     vol_trail_max: float = 0.16
     regime_buffer_base_edge: float = 0.015
     regime_buffer_additional: float = 0.010
     reentry_cooldown_days: int = 10
+    reentry_cooldown_good_days: int = 5
+    reentry_cooldown_bad_days: int = 15
     turnover_smoothing_lambda: float = 0.20
+    portfolio_vol_target_annual: float = 0.18
+    portfolio_vol_lookback_days: int = 63
+    portfolio_vol_scale_min: float = 0.70
+    portfolio_vol_scale_max: float = 1.30
 
 
 @dataclass(frozen=True)
@@ -258,6 +265,11 @@ class ExperimentSpec:
     use_reentry_cooldown: bool = False
     use_turnover_smoothing: bool = False
     use_cluster_caps: bool = True
+    use_adaptive_cooldown: bool = False
+    use_dynamic_edge_floor: bool = False
+    use_quality_priority_cap: bool = False
+    use_portfolio_vol_target: bool = False
+    use_side_aware_cooldown: bool = False
     cooldown_days_override: int | None = None
 
 
@@ -280,6 +292,11 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         use_turnover_smoothing=True,
         use_cluster_caps=True,
     ),
+    ExperimentSpec(name="ehf1_adaptive_cooldown", use_adaptive_cooldown=True),
+    ExperimentSpec(name="ehf2_dynamic_edge_floor", use_dynamic_edge_floor=True),
+    ExperimentSpec(name="ehf3_quality_priority_cap", use_quality_priority_cap=True),
+    ExperimentSpec(name="ehf4_portfolio_vol_target", use_portfolio_vol_target=True),
+    ExperimentSpec(name="ehf5_side_aware_cooldown", use_side_aware_cooldown=True),
 )
 
 
@@ -425,7 +442,7 @@ def _build_trades(
             conf = _confidence_from_row(r, cfg)
             strength = float(max(1e-6, rank - cfg.top_quantile))
             edge_proxy = strength * conf
-            if exp.use_regime_buffer:
+            if exp.use_regime_buffer or exp.use_dynamic_edge_floor:
                 spy_up = float(r["spy_up"]) > 0.5
                 spy_vol = float(r["spy_vol_21"])
                 stressed = (not spy_up) or (
@@ -448,7 +465,9 @@ def _build_trades(
         if not cands:
             continue
         cands.sort(key=lambda x: float(x["priority"]), reverse=True)
-        if exp.use_crowding_cap:
+        if exp.use_quality_priority_cap:
+            cands = cands[: cfg.quality_cap_max_new_entries_per_day]
+        elif exp.use_crowding_cap:
             cands = cands[: cfg.crowding_max_new_entries_per_day]
 
         for c in cands:
@@ -505,7 +524,24 @@ def _build_trades(
             )
             last_end_by_asset[asset] = exit_idx
             if exp.use_reentry_cooldown:
-                cd_days = int(exp.cooldown_days_override) if exp.cooldown_days_override is not None else cfg.reentry_cooldown_days
+                if exp.use_side_aware_cooldown:
+                    pnl_sign = 1.0
+                    if entry_px > 0:
+                        exit_px = float(close_wide.loc[all_dates[exit_idx], asset])
+                        pnl_sign = trend_sign * (exit_px / entry_px - 1.0)
+                    cd_days = cfg.reentry_cooldown_good_days if pnl_sign > 0 else cfg.reentry_cooldown_bad_days
+                elif exp.use_adaptive_cooldown:
+                    spy_vol = float(r["spy_vol_21"])
+                    if np.isfinite(spy_vol) and np.isfinite(train_spy_vol_median) and spy_vol > train_spy_vol_median:
+                        cd_days = cfg.reentry_cooldown_bad_days
+                    else:
+                        cd_days = cfg.reentry_cooldown_good_days
+                else:
+                    cd_days = (
+                        int(exp.cooldown_days_override)
+                        if exp.cooldown_days_override is not None
+                        else cfg.reentry_cooldown_days
+                    )
                 cooldown_until_by_asset[asset] = exit_idx + cd_days
     return pd.DataFrame(rows)
 
@@ -638,6 +674,7 @@ def _simulate_fold(
         prev_w = pd.Series(0.0, index=assets, dtype=float)
         one_way = _one_way_cost_return(cfg)
         rows: list[dict[str, float | str]] = []
+        hist_net: list[float] = []
         for i in range(1, len(dates)):
             active = t[(t["start_idx"] <= i) & (t["end_idx"] >= i)]
             target_w = _weights_from_active(
@@ -651,6 +688,21 @@ def _simulate_fold(
                 w = (1.0 - cfg.turnover_smoothing_lambda) * target_w + cfg.turnover_smoothing_lambda * prev_w
             else:
                 w = target_w
+
+            if exp.use_portfolio_vol_target:
+                if len(hist_net) >= cfg.portfolio_vol_lookback_days:
+                    rv = float(np.std(hist_net[-cfg.portfolio_vol_lookback_days :], ddof=1)) * math.sqrt(252.0)
+                    if np.isfinite(rv) and rv > 1e-9:
+                        scale = float(
+                            np.clip(
+                                cfg.portfolio_vol_target_annual / rv,
+                                cfg.portfolio_vol_scale_min,
+                                cfg.portfolio_vol_scale_max,
+                            )
+                        )
+                        w = w * scale
+                # Re-apply per-asset cap after scaling.
+                w = w.clip(-cfg.max_abs_weight_per_asset, cfg.max_abs_weight_per_asset)
 
             gross = float(np.dot(w.values, rets.iloc[i].reindex(assets).fillna(0.0).values))
             turnover = float(np.abs(w - prev_w).sum())
@@ -673,6 +725,7 @@ def _simulate_fold(
                 }
             )
             prev_w = w
+            hist_net.append(float(net))
         out = pd.DataFrame(rows)
 
     out["timestamp"] = pd.to_datetime(out["timestamp"], utc=True, errors="coerce")
