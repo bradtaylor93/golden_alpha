@@ -83,15 +83,15 @@ class Config:
     period: str = "max"
     interval: str = "1d"
     start_date: str = "2013-01-01"
-    prediction_horizon_days: int = 1
+    prediction_horizon_days: int = 10
     min_train_years: int = 3
     gross_target: float = 1.0
     max_abs_weight_per_asset: float = 0.04
     transaction_cost_bps_per_side: float = 10.0
     slippage_bps_per_side: float = 5.0
-    lookbacks: tuple[int, ...] = (2, 4, 10, 20, 40, 80, 120)
-    sr_windows: tuple[int, ...] = (20, 40, 80, 120)
-    bb_windows: tuple[int, ...] = (20, 40, 80)
+    lookbacks: tuple[int, ...] = (5, 10, 20, 40, 80, 120, 200)
+    sr_windows: tuple[int, ...] = (40, 80, 120, 200)
+    bb_windows: tuple[int, ...] = (40, 80, 120)
 
 
 @dataclass(frozen=True)
@@ -207,9 +207,9 @@ def _build_feature_panel(
     feat = feat_pack.build(
         bars,
         params={
-            "short_window": 6,
-            "medium_window": 20,
-            "long_window": 60,
+            "short_window": 12,
+            "medium_window": 40,
+            "long_window": 120,
             "lookbacks": list(cfg.lookbacks),
             "sr_windows": list(cfg.sr_windows),
             "bb_windows": list(cfg.bb_windows),
@@ -220,22 +220,23 @@ def _build_feature_panel(
     px = bars[["timestamp", "asset", "close"]].copy()
     px["close"] = pd.to_numeric(px["close"], errors="coerce")
     px = px.dropna(subset=["close"]).copy()
-    px["fwd_ret_1d"] = px.groupby("asset", sort=False)["close"].shift(-1) / px["close"] - 1.0
-    px["target_up"] = (px["fwd_ret_1d"] > 0.0).astype(float)
+    h = int(cfg.prediction_horizon_days)
+    px["fwd_ret_h"] = px.groupby("asset", sort=False)["close"].shift(-h) / px["close"] - 1.0
+    px["target_up"] = (px["fwd_ret_h"] > 0.0).astype(float)
 
-    panel = feat.merge(px[["timestamp", "asset", "fwd_ret_1d", "target_up"]], on=["timestamp", "asset"], how="inner")
+    panel = feat.merge(px[["timestamp", "asset", "fwd_ret_h", "target_up"]], on=["timestamp", "asset"], how="inner")
 
     spy = spy_df.copy()
     spy["timestamp"] = pd.to_datetime(spy["timestamp"], utc=True, errors="coerce")
     spy = spy.dropna(subset=["timestamp", "close"]).sort_values("timestamp")
     spy["close"] = pd.to_numeric(spy["close"], errors="coerce")
     spy = spy.dropna(subset=["close"]).copy()
-    spy["spy_fwd_ret_1d"] = spy["close"].shift(-1) / spy["close"] - 1.0
-    panel = panel.merge(spy[["timestamp", "spy_fwd_ret_1d"]], on="timestamp", how="left")
+    spy["spy_fwd_ret_h"] = spy["close"].shift(-h) / spy["close"] - 1.0
+    panel = panel.merge(spy[["timestamp", "spy_fwd_ret_h"]], on="timestamp", how="left")
     panel["year"] = panel["timestamp"].dt.year
 
     panel = panel.replace([np.inf, -np.inf], np.nan)
-    panel = panel.dropna(subset=["fwd_ret_1d", "target_up", "spy_fwd_ret_1d"]).reset_index(drop=True)
+    panel = panel.dropna(subset=["fwd_ret_h", "target_up", "spy_fwd_ret_h"]).reset_index(drop=True)
 
     feature_cols = [c for c in feat.columns if c not in ("timestamp", "asset")]
     return panel, feature_cols
@@ -279,7 +280,7 @@ def _fit_predict_fold(
 
     model.fit(x_train, y_train)
     prob_up = model.predict_proba(x_test)[:, 1]
-    out = test[["timestamp", "asset", "fwd_ret_1d", "spy_fwd_ret_1d"]].copy()
+    out = test[["timestamp", "asset", "fwd_ret_h", "spy_fwd_ret_h"]].copy()
     out["prob_up"] = prob_up
     return out
 
@@ -327,7 +328,7 @@ def _simulate_strategy(
         p.loc[p["prob_up"] >= spec.prob_threshold, "signal"] = 1.0
         p.loc[p["prob_up"] <= (1.0 - spec.prob_threshold), "signal"] = -1.0
     p["strength"] = (p["prob_up"] - 0.5).abs() * 2.0
-    p = p[(p["signal"] != 0.0) & np.isfinite(p["fwd_ret_1d"])].copy()
+    p = p[(p["signal"] != 0.0) & np.isfinite(p["fwd_ret_h"])].copy()
 
     all_dates = sorted(pred_df["timestamp"].dropna().unique().tolist())
     assets = sorted(pred_df["asset"].dropna().astype(str).unique().tolist())
@@ -345,13 +346,13 @@ def _simulate_strategy(
         base_day = pred_by_ts.get(ts)
         if base_day is None or base_day.empty:
             continue
-        r_map = base_day.set_index("asset")["fwd_ret_1d"]
+        r_map = base_day.set_index("asset")["fwd_ret_h"]
         aligned = r_map.reindex(assets).fillna(0.0).to_numpy(dtype=float)
         gross = float(np.dot(w.to_numpy(dtype=float), aligned))
         turnover = float(np.abs(w - prev_w).sum())
         cost = turnover * one_way
         net = gross - cost
-        spy_r = float(pd.to_numeric(base_day["spy_fwd_ret_1d"], errors="coerce").dropna().iloc[0])
+        spy_r = float(pd.to_numeric(base_day["spy_fwd_ret_h"], errors="coerce").dropna().iloc[0])
         rows.append(
             {
                 "timestamp": str(ts),
@@ -378,21 +379,21 @@ def _simulate_strategy(
 
 
 def _simulate_buy_hold_fold(test: pd.DataFrame, cfg: Config, fold_id: str) -> pd.DataFrame:
-    d = test[["timestamp", "asset", "fwd_ret_1d", "spy_fwd_ret_1d"]].copy()
+    d = test[["timestamp", "asset", "fwd_ret_h", "spy_fwd_ret_h"]].copy()
     d = d.dropna(subset=["timestamp"]).sort_values(["timestamp", "asset"])
     by_ts = d.groupby("timestamp", sort=True)
     rows: list[dict[str, float | str]] = []
     one_way = _one_way_cost_return(cfg)
     did_enter = False
     for ts, g in by_ts:
-        r = pd.to_numeric(g["fwd_ret_1d"], errors="coerce").dropna()
+        r = pd.to_numeric(g["fwd_ret_h"], errors="coerce").dropna()
         if r.empty:
             continue
         gross = float(r.mean())
         turnover = 1.0 if not did_enter else 0.0
         did_enter = True
         net = gross - turnover * one_way
-        spy_r = float(pd.to_numeric(g["spy_fwd_ret_1d"], errors="coerce").dropna().iloc[0])
+        spy_r = float(pd.to_numeric(g["spy_fwd_ret_h"], errors="coerce").dropna().iloc[0])
         rows.append(
             {
                 "timestamp": str(ts),
