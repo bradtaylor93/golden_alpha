@@ -602,13 +602,19 @@ def _portfolio_metrics(daily: pd.DataFrame, trades: pd.DataFrame) -> dict[str, f
     alpha_daily_mean = float(alpha_daily.mean()) if len(alpha_daily) else float("nan")
     alpha_daily_ann_mean = float(alpha_daily_mean * 252.0) if np.isfinite(alpha_daily_mean) else float("nan")
     alpha_daily_hit = float((alpha_daily > 0).mean()) if len(alpha_daily) else float("nan")
-    alpha_trade = pd.to_numeric(trades.get("alpha_return"), errors="coerce")
+    if "alpha_return" in trades.columns:
+        alpha_trade = pd.to_numeric(trades["alpha_return"], errors="coerce")
+    else:
+        alpha_trade = pd.Series(dtype=float, index=trades.index)
     # Proxy for capital-weighted trade alpha: stronger signals held longer get larger weight.
     if "signal_strength" in trades.columns:
         strength = pd.to_numeric(trades["signal_strength"], errors="coerce").abs()
     else:
         strength = pd.Series(1.0, index=trades.index, dtype=float)
-    hold_raw = pd.Series(pd.to_numeric(trades.get("hold_days"), errors="coerce"), index=trades.index, dtype=float)
+    if "hold_days" in trades.columns:
+        hold_raw = pd.Series(pd.to_numeric(trades["hold_days"], errors="coerce"), index=trades.index, dtype=float)
+    else:
+        hold_raw = pd.Series(1.0, index=trades.index, dtype=float)
     hold = hold_raw.where(hold_raw >= 1.0, 1.0)
     trade_w = strength * hold
     mask = alpha_trade.notna() & trade_w.notna() & (trade_w > 0)
