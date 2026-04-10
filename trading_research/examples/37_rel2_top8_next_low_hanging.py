@@ -253,6 +253,13 @@ class Config:
     portfolio_vol_lookback_days: int = 63
     portfolio_vol_scale_min: float = 0.70
     portfolio_vol_scale_max: float = 1.30
+    # Sharpe-first overlays.
+    beta_window_days: int = 63
+    beta_cap: float = 1.0
+    beta_activate_threshold: float = 0.10
+    hedge_cost_bps_per_side: float = 2.0
+    stressed_gross_scale: float = 0.65
+    calm_gross_scale: float = 1.05
 
 
 @dataclass(frozen=True)
@@ -270,38 +277,80 @@ class ExperimentSpec:
     use_quality_priority_cap: bool = False
     use_portfolio_vol_target: bool = False
     use_side_aware_cooldown: bool = False
+    use_beta_hedge: bool = False
+    use_dynamic_gross_target: bool = False
+    require_spy_up_for_longs: bool = False
+    require_spy_down_for_shorts: bool = False
+    top_quantile_override: float | None = None
+    rel_strength_threshold_override: float | None = None
     cooldown_days_override: int | None = None
 
 
 EXPERIMENTS: tuple[ExperimentSpec, ...] = (
+    # Prior best baseline.
     ExperimentSpec(name="base_lhf5_cluster_caps"),
-    ExperimentSpec(name="nhf1_liquidity_filter", use_liquidity_filter=True),
-    ExperimentSpec(name="nhf2_crowding_cap", use_crowding_cap=True),
-    ExperimentSpec(name="nhf3_vol_norm_trail", use_vol_norm_trail=True),
-    ExperimentSpec(name="nhf4_regime_buffer", use_regime_buffer=True),
     ExperimentSpec(name="nhf5_reentry_cooldown", use_reentry_cooldown=True),
-    ExperimentSpec(name="nhf5_reentry_cooldown_05d", use_reentry_cooldown=True, cooldown_days_override=5),
-    ExperimentSpec(name="nhf5_reentry_cooldown_15d", use_reentry_cooldown=True, cooldown_days_override=15),
+    # Sharpe-first candidates: no cash-yield assumptions, only signal/risk controls.
     ExperimentSpec(
-        name="nhf7_cooldown10_voltrail",
+        name="sf1_top5_rel3_cooldown",
         use_reentry_cooldown=True,
-        use_vol_norm_trail=True,
+        top_quantile_override=0.95,
+        rel_strength_threshold_override=0.03,
     ),
     ExperimentSpec(
-        name="nhf6_cluster_caps_turnover",
-        use_turnover_smoothing=True,
-        use_cluster_caps=True,
+        name="sf2_top5_rel3_regime_side",
+        use_reentry_cooldown=True,
+        use_regime_buffer=True,
+        require_spy_up_for_longs=True,
+        require_spy_down_for_shorts=True,
+        top_quantile_override=0.95,
+        rel_strength_threshold_override=0.03,
     ),
-    ExperimentSpec(name="ehf1_adaptive_cooldown", use_adaptive_cooldown=True),
-    ExperimentSpec(name="ehf2_dynamic_edge_floor", use_dynamic_edge_floor=True),
-    ExperimentSpec(name="ehf3_quality_priority_cap", use_quality_priority_cap=True),
-    ExperimentSpec(name="ehf4_portfolio_vol_target", use_portfolio_vol_target=True),
-    ExperimentSpec(name="ehf5_side_aware_cooldown", use_side_aware_cooldown=True),
+    ExperimentSpec(
+        name="sf3_top5_rel3_regime_voltarget",
+        use_reentry_cooldown=True,
+        use_regime_buffer=True,
+        use_portfolio_vol_target=True,
+        require_spy_up_for_longs=True,
+        require_spy_down_for_shorts=True,
+        top_quantile_override=0.95,
+        rel_strength_threshold_override=0.03,
+    ),
+    ExperimentSpec(
+        name="sf4_top5_rel3_regime_voltarget_beta",
+        use_reentry_cooldown=True,
+        use_regime_buffer=True,
+        use_portfolio_vol_target=True,
+        use_beta_hedge=True,
+        use_turnover_smoothing=True,
+        use_dynamic_gross_target=True,
+        require_spy_up_for_longs=True,
+        require_spy_down_for_shorts=True,
+        top_quantile_override=0.95,
+        rel_strength_threshold_override=0.03,
+    ),
+    ExperimentSpec(
+        name="sf5_top3_rel4_ultra_defensive",
+        use_reentry_cooldown=True,
+        use_regime_buffer=True,
+        use_portfolio_vol_target=True,
+        use_beta_hedge=True,
+        use_turnover_smoothing=True,
+        use_dynamic_gross_target=True,
+        require_spy_up_for_longs=True,
+        require_spy_down_for_shorts=True,
+        top_quantile_override=0.97,
+        rel_strength_threshold_override=0.04,
+    ),
 )
 
 
 def _one_way_cost_return(cfg: Config) -> float:
     return (cfg.transaction_cost_bps_per_side + cfg.slippage_bps_per_side) / 10_000.0
+
+
+def _hedge_one_way_cost_return(cfg: Config) -> float:
+    return cfg.hedge_cost_bps_per_side / 10_000.0
 
 
 def _build_panel(bars: pd.DataFrame, spy: pd.DataFrame, cfg: Config) -> pd.DataFrame:
@@ -415,6 +464,12 @@ def _build_trades(
     last_end_by_asset: dict[str, int] = {}
     cooldown_until_by_asset: dict[str, int] = {}
     by_ts = {ts: g.copy() for ts, g in test_panel.groupby("timestamp", sort=True)}
+    top_q = float(exp.top_quantile_override) if exp.top_quantile_override is not None else cfg.top_quantile
+    rel_thresh = (
+        float(exp.rel_strength_threshold_override)
+        if exp.rel_strength_threshold_override is not None
+        else cfg.rel_strength_threshold
+    )
 
     for ts in all_dates:
         sig_idx = date_to_idx[ts]
@@ -428,24 +483,30 @@ def _build_trades(
             asset = str(r["asset"])
             rank = float(r["rank_pct"])
             rel = float(r["rel_strength_63"])
-            if rank < cfg.top_quantile or rel < cfg.rel_strength_threshold:
+            if rank < top_q or rel < rel_thresh:
                 continue
             if exp.use_liquidity_filter and float(r["adv_rank_pct"]) < cfg.liquidity_min_rank_pct:
                 continue
             trend_sign = float(np.sign(float(r["past_return"])))
             if not np.isfinite(trend_sign) or trend_sign == 0.0:
                 continue
+            spy_up_now = float(r["spy_up"]) > 0.5
+            if exp.require_spy_up_for_longs and trend_sign > 0 and not spy_up_now:
+                continue
+            if exp.require_spy_down_for_shorts and trend_sign < 0 and spy_up_now:
+                continue
             if sig_idx <= int(last_end_by_asset.get(asset, -1)):
                 continue
             if exp.use_reentry_cooldown and sig_idx <= int(cooldown_until_by_asset.get(asset, -1)):
                 continue
-            conf = _confidence_from_row(r, cfg)
-            strength = float(max(1e-6, rank - cfg.top_quantile))
+            rank_conf = float(np.clip((rank - top_q) / max(1e-6, 1.0 - top_q), 0.0, 1.0))
+            rel_conf = float(np.clip((rel - rel_thresh) / 0.05, 0.0, 1.0))
+            conf = float(0.5 + 1.5 * (0.5 * rank_conf + 0.5 * rel_conf))
+            strength = float(max(1e-6, rank - top_q))
             edge_proxy = strength * conf
             if exp.use_regime_buffer or exp.use_dynamic_edge_floor:
-                spy_up = float(r["spy_up"]) > 0.5
                 spy_vol = float(r["spy_vol_21"])
-                stressed = (not spy_up) or (
+                stressed = (not spy_up_now) or (
                     np.isfinite(spy_vol) and np.isfinite(train_spy_vol_median) and spy_vol > train_spy_vol_median
                 )
                 req = cfg.regime_buffer_base_edge + (cfg.regime_buffer_additional if stressed else 0.0)
@@ -673,8 +734,12 @@ def _simulate_fold(
         t = t.dropna(subset=["start_idx", "end_idx", "asset", "signal_sign", "signal_strength", "entry_vol_21", "confidence_score"])
         prev_w = pd.Series(0.0, index=assets, dtype=float)
         one_way = _one_way_cost_return(cfg)
+        hedge_one_way = _hedge_one_way_cost_return(cfg)
+        prev_hedge = 0.0
         rows: list[dict[str, float | str]] = []
         hist_net: list[float] = []
+        hist_strat: list[float] = []
+        hist_spy: list[float] = []
         for i in range(1, len(dates)):
             active = t[(t["start_idx"] <= i) & (t["end_idx"] >= i)]
             target_w = _weights_from_active(
@@ -688,6 +753,18 @@ def _simulate_fold(
                 w = (1.0 - cfg.turnover_smoothing_lambda) * target_w + cfg.turnover_smoothing_lambda * prev_w
             else:
                 w = target_w
+
+            if exp.use_dynamic_gross_target:
+                curr_spy_up = bool(float(spy_up.iloc[i]) > 0.5) if np.isfinite(spy_up.iloc[i]) else False
+                curr_spy_vol = float(spy_vol21.iloc[i]) if np.isfinite(spy_vol21.iloc[i]) else float("nan")
+                stressed = (not curr_spy_up) or (
+                    np.isfinite(curr_spy_vol)
+                    and np.isfinite(train_spy_vol_median)
+                    and curr_spy_vol > train_spy_vol_median
+                )
+                gross_scale = cfg.stressed_gross_scale if stressed else cfg.calm_gross_scale
+                w = w * float(gross_scale)
+                w = w.clip(-cfg.max_abs_weight_per_asset, cfg.max_abs_weight_per_asset)
 
             if exp.use_portfolio_vol_target:
                 if len(hist_net) >= cfg.portfolio_vol_lookback_days:
@@ -707,10 +784,25 @@ def _simulate_fold(
             gross = float(np.dot(w.values, rets.iloc[i].reindex(assets).fillna(0.0).values))
             turnover = float(np.abs(w - prev_w).sum())
             cost = turnover * one_way
-            net = gross - cost
+            strat_net_pre = gross - cost
             spy_r = float(spy_ret.iloc[i]) if np.isfinite(spy_ret.iloc[i]) else 0.0
 
             hedge_beta = 0.0
+            hedge_turnover = 0.0
+            hedge_cost = 0.0
+            if exp.use_beta_hedge:
+                if len(hist_strat) >= cfg.beta_window_days and len(hist_spy) >= cfg.beta_window_days:
+                    y = np.asarray(hist_strat[-cfg.beta_window_days :], dtype=float)
+                    x = np.asarray(hist_spy[-cfg.beta_window_days :], dtype=float)
+                    vx = float(np.var(x, ddof=1))
+                    if np.isfinite(vx) and vx > 1e-12:
+                        beta_est = float(np.cov(y, x, ddof=1)[0, 1] / vx)
+                        if np.isfinite(beta_est) and beta_est >= cfg.beta_activate_threshold:
+                            hedge_beta = float(np.clip(beta_est, 0.0, cfg.beta_cap))
+                hedge_turnover = abs(hedge_beta - prev_hedge)
+                hedge_cost = hedge_turnover * hedge_one_way
+                prev_hedge = hedge_beta
+            net = strat_net_pre - hedge_beta * spy_r - hedge_cost
             alpha = net - max(0.0, 1.0 - hedge_beta) * spy_r
 
             rows.append(
@@ -719,13 +811,15 @@ def _simulate_fold(
                     "net_return": net,
                     "spy_return": spy_r,
                     "alpha_return": alpha,
-                    "turnover": turnover,
-                    "gross_exposure": float(np.abs(w).sum()),
+                    "turnover": float(turnover + hedge_turnover),
+                    "gross_exposure": float(np.abs(w).sum() + abs(hedge_beta)),
                     "hedge_beta": hedge_beta,
                 }
             )
             prev_w = w
             hist_net.append(float(net))
+            hist_strat.append(float(strat_net_pre))
+            hist_spy.append(float(spy_r))
         out = pd.DataFrame(rows)
 
     out["timestamp"] = pd.to_datetime(out["timestamp"], utc=True, errors="coerce")
