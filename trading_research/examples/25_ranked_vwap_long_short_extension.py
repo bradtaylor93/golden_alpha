@@ -117,7 +117,50 @@ EXTRA_UNIVERSE_40 = [
     "SO",
 ]
 
-UNIVERSE_90 = tuple(dict.fromkeys([*UNIVERSE_50, *EXTRA_UNIVERSE_40]))
+EXTRA_UNIVERSE_40_MORE = [
+    "AON",
+    "APH",
+    "CCI",
+    "CL",
+    "COF",
+    "CSX",
+    "DD",
+    "DOW",
+    "DUK",
+    "ECL",
+    "EMR",
+    "EQIX",
+    "EW",
+    "FDX",
+    "FIS",
+    "FITB",
+    "GD",
+    "HCA",
+    "ICE",
+    "ILMN",
+    "KMB",
+    "KMI",
+    "KLAC",
+    "LHX",
+    "MAR",
+    "MMC",
+    "MNST",
+    "MSI",
+    "NSC",
+    "OXY",
+    "PSA",
+    "REGN",
+    "ROP",
+    "SHW",
+    "SNPS",
+    "STZ",
+    "TFC",
+    "TT",
+    "VLO",
+    "WMB",
+]
+
+UNIVERSE_130 = tuple(dict.fromkeys([*UNIVERSE_50, *EXTRA_UNIVERSE_40, *EXTRA_UNIVERSE_40_MORE]))
 
 
 @dataclass(frozen=True)
@@ -396,7 +439,7 @@ def main() -> None:
 
     cfg = Config()
     vendor = YahooMarketDataVendor()
-    bars = vendor.fetch_bars(list(UNIVERSE_90), period="3y", interval="1d")
+    bars = vendor.fetch_bars(list(UNIVERSE_130), period="3y", interval="1d")
     spy = vendor.fetch_bars(["SPY"], period="3y", interval="1d")[["timestamp", "close"]]
     if bars.empty or spy.empty:
         raise ValueError("Missing data for long-short extension test.")
@@ -434,7 +477,7 @@ def main() -> None:
 
     summary = {
         "split_timestamp": str(split_ts),
-        "universe_size_requested": len(UNIVERSE_90),
+        "universe_size_requested": len(UNIVERSE_130),
         "universe_size_fetched": int(pd.Series(bars["asset"]).nunique()),
         "config": {
             "signal_lookback_days": cfg.signal_lookback_days,
