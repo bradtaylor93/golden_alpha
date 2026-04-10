@@ -591,7 +591,7 @@ def main() -> None:
     reports_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = Config()
-    universe = _load_universe_170()
+    universe = UNIVERSE_170
     vendor = YahooMarketDataVendor()
     bars = vendor.fetch_bars(list(universe), period=cfg.period, interval=cfg.interval)
     spy_df = vendor.fetch_bars(["SPY"], period=cfg.period, interval=cfg.interval)[["timestamp", "close"]]
