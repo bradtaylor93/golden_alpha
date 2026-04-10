@@ -245,18 +245,26 @@ class Config:
     comp_hold_days: int = 42
     comp_trailing_stop_pct: float = 0.10
     comp_reentry_cooldown_days: int = 5
+    comp_allow_shorts: bool = False
+    comp_require_spy_up: bool = True
+    comp_min_rel_strength: float = 0.0
     # EMA sleeve
     ema_fast_span: int = 20
     ema_slow_span: int = 100
     ema_min_gap: float = 0.003
     ema_max_hold_days: int = 84
     ema_reentry_cooldown_days: int = 10
+    ema_allow_shorts: bool = False
+    ema_require_spy_up: bool = True
     # Combination allocator
     combo_lookback_days: int = 63
     combo_min_history_days: int = 40
     combo_corr_penalty: float = 0.75
-    combo_alloc_smoothing_lambda: float = 0.20
+    combo_alloc_smoothing_lambda: float = 0.50
     combo_alloc_cost_bps_per_side: float = 1.0
+    combo_rebalance_days: int = 5
+    combo_disable_sharpe_threshold: float = 0.10
+    combo_core_min_weight: float = 0.60
 
 
 def _one_way_cost_return(cfg: Config) -> float:
@@ -511,9 +519,15 @@ def _build_vol_compression_trades(
             sign = 0.0
             if np.isfinite(close) and np.isfinite(b_hi) and close > b_hi:
                 sign = 1.0
-            elif np.isfinite(close) and np.isfinite(b_lo) and close < b_lo:
+            elif cfg.comp_allow_shorts and np.isfinite(close) and np.isfinite(b_lo) and close < b_lo:
                 sign = -1.0
             if sign == 0.0:
+                continue
+            spy_up = float(r["spy_up"]) > 0.5
+            if cfg.comp_require_spy_up and sign > 0 and not spy_up:
+                continue
+            rel = float(r["rel_strength_63"])
+            if sign > 0 and np.isfinite(rel) and rel < cfg.comp_min_rel_strength:
                 continue
             if sig_idx <= int(last_end_by_asset.get(asset, -1)):
                 continue
@@ -614,6 +628,11 @@ def _build_ema_trades(test_panel: pd.DataFrame, cfg: Config, fold_id: str) -> pd
             if not up and not down:
                 continue
             sign = 1.0 if up else -1.0
+            if sign < 0 and not cfg.ema_allow_shorts:
+                continue
+            spy_up = float(r["spy_up"]) > 0.5
+            if cfg.ema_require_spy_up and sign > 0 and not spy_up:
+                continue
             if sig_idx <= int(last_end_by_asset.get(asset, -1)):
                 continue
             if sig_idx <= int(cooldown_until_by_asset.get(asset, -1)):
@@ -848,7 +867,11 @@ def _combine_sleeves_daily(
 
     for i in range(len(base)):
         if i < cfg.combo_min_history_days:
-            alloc = pd.Series(1.0 / len(sleeve_names), index=sleeve_names, dtype=float)
+            alloc = pd.Series(0.0, index=sleeve_names, dtype=float)
+            alloc.loc[SLEEVE_REL2] = 1.0
+            prev_alloc = alloc.copy() if i == 0 else prev_alloc
+        elif (i % max(1, cfg.combo_rebalance_days)) != 0:
+            alloc = prev_alloc.copy()
         else:
             start = max(0, i - cfg.combo_lookback_days)
             hist = pd.DataFrame(
@@ -857,7 +880,9 @@ def _combine_sleeves_daily(
             )
             mu = hist.mean()
             vol = hist.std(ddof=1).replace(0.0, np.nan).fillna(cfg.vol_floor).clip(lower=cfg.vol_floor)
-            sharpe_proxy = (mu / vol).clip(lower=0.0)
+            sharpe_proxy = (mu / vol).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+            # Disable sleeves that have weak/negative recent edge.
+            sharpe_proxy = sharpe_proxy.where(sharpe_proxy >= cfg.combo_disable_sharpe_threshold, 0.0)
             corr = hist.corr().fillna(0.0)
             corr_pen = pd.Series(1.0, index=sleeve_names, dtype=float)
             if len(sleeve_names) > 1:
@@ -866,9 +891,23 @@ def _combine_sleeves_daily(
                     avg_abs_corr = float(corr.loc[name, others].abs().mean()) if others else 0.0
                     corr_pen.loc[name] = 1.0 + cfg.combo_corr_penalty * avg_abs_corr
             raw = (sharpe_proxy / corr_pen) * (1.0 / vol)
+            if SLEEVE_REL2 in raw.index:
+                raw.loc[SLEEVE_REL2] = max(float(raw.loc[SLEEVE_REL2]), 1e-6)
             if float(raw.sum()) <= 1e-12:
-                raw = 1.0 / vol
-            alloc_target = raw / max(1e-12, float(raw.sum()))
+                alloc_target = pd.Series(0.0, index=sleeve_names, dtype=float)
+                alloc_target.loc[SLEEVE_REL2] = 1.0
+            else:
+                alloc_target = raw / max(1e-12, float(raw.sum()))
+            # Keep rel2 as core sleeve with a minimum structural weight.
+            if SLEEVE_REL2 in alloc_target.index and alloc_target.loc[SLEEVE_REL2] < cfg.combo_core_min_weight:
+                others = [n for n in sleeve_names if n != SLEEVE_REL2]
+                rem = max(1e-12, 1.0 - cfg.combo_core_min_weight)
+                alloc_target.loc[SLEEVE_REL2] = cfg.combo_core_min_weight
+                other_sum = float(alloc_target.loc[others].sum()) if others else 0.0
+                if others and other_sum > 1e-12:
+                    alloc_target.loc[others] = alloc_target.loc[others] * (rem / other_sum)
+                elif others:
+                    alloc_target.loc[others] = rem / len(others)
             alloc = (1.0 - cfg.combo_alloc_smoothing_lambda) * alloc_target + cfg.combo_alloc_smoothing_lambda * prev_alloc
             alloc = alloc / max(1e-12, float(alloc.sum()))
 
