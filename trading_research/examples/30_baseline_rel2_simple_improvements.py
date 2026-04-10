@@ -604,10 +604,12 @@ def _portfolio_metrics(daily: pd.DataFrame, trades: pd.DataFrame) -> dict[str, f
     alpha_daily_hit = float((alpha_daily > 0).mean()) if len(alpha_daily) else float("nan")
     alpha_trade = pd.to_numeric(trades.get("alpha_return"), errors="coerce")
     # Proxy for capital-weighted trade alpha: stronger signals held longer get larger weight.
-    trade_w = (
-        pd.to_numeric(trades.get("signal_strength"), errors="coerce").abs()
-        * pd.to_numeric(trades.get("hold_days"), errors="coerce").clip(lower=1.0)
-    )
+    if "signal_strength" in trades.columns:
+        strength = pd.to_numeric(trades["signal_strength"], errors="coerce").abs()
+    else:
+        strength = pd.Series(1.0, index=trades.index, dtype=float)
+    hold = pd.to_numeric(trades.get("hold_days"), errors="coerce").clip(lower=1.0)
+    trade_w = strength * hold
     mask = alpha_trade.notna() & trade_w.notna() & (trade_w > 0)
     alpha_trade_weighted_proxy = (
         float(np.average(alpha_trade[mask], weights=trade_w[mask]))
