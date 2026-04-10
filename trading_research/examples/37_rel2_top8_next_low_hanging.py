@@ -819,12 +819,17 @@ def _portfolio_metrics(daily: pd.DataFrame, trades: pd.DataFrame) -> dict[str, f
             "avg_gross_exposure": float("nan"),
             "avg_hedge_beta": float("nan"),
         }
-    ann = float(np.exp(np.log1p(daily["net_return"]).mean() * 252.0) - 1.0)
+    net = pd.to_numeric(daily["net_return"], errors="coerce").fillna(0.0)
+    ann = float(np.exp(np.log1p(net).mean() * 252.0) - 1.0)
     start, end = daily["timestamp"].iloc[0], daily["timestamp"].iloc[-1]
     years = max(1e-9, (end - start).total_seconds() / (365.25 * 24 * 3600))
-    eq_end = float(daily["equity"].iloc[-1])
+    # Rebuild stitched OOS equity from daily returns so metrics are robust
+    # even when per-fold equity paths are concatenated.
+    equity = (1.0 + net).cumprod()
+    eq_end = float(equity.iloc[-1])
     cagr = float(eq_end ** (1.0 / years) - 1.0) if eq_end > 0 else float("nan")
-    max_dd = float(daily["drawdown"].min())
+    running_max = equity.cummax()
+    max_dd = float((equity / running_max - 1.0).min())
     sr_n = (
         float((daily["net_return"].mean() / daily["net_return"].std(ddof=1)) * math.sqrt(252.0))
         if len(daily) > 1 and float(daily["net_return"].std(ddof=1)) > 0
