@@ -266,6 +266,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ExperimentSpec(name="lhf3_edge_floor_filter", use_edge_floor_filter=True),
     ExperimentSpec(name="lhf4_conf_decay_exit", use_conf_decay_exit=True),
     ExperimentSpec(name="lhf5_cluster_caps", use_cluster_caps=True),
+    ExperimentSpec(name="lhf6_cluster_caps_turnover", use_cluster_caps=True, use_turnover_smoothing=True),
 )
 
 
