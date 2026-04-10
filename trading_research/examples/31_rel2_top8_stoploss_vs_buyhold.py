@@ -669,11 +669,8 @@ def main() -> None:
             if all_daily_by_strategy[name]
             else pd.DataFrame()
         )
-        trades_all = (
-            pd.concat([t for t in all_trades_by_strategy[name] if not t.empty], ignore_index=True)
-            if all_trades_by_strategy[name]
-            else pd.DataFrame()
-        )
+        non_empty_trades = [t for t in all_trades_by_strategy[name] if not t.empty]
+        trades_all = pd.concat(non_empty_trades, ignore_index=True) if non_empty_trades else pd.DataFrame()
         if not daily_all.empty:
             daily_all = daily_all.sort_values("timestamp").reset_index(drop=True)
             daily_all["year"] = daily_all["timestamp"].dt.year
