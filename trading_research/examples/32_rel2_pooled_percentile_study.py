@@ -212,13 +212,22 @@ class Config:
 @dataclass(frozen=True)
 class StrategySpec:
     name: str
-    mode: str  # "baseline_top8", "pooled"
+    mode: str  # "baseline_top8", "pooled", "dynamic_pooled", "baseline_top8_weighted"
     pooled_q: float | None = None
     require_xs_top_quantile: float | None = None
+    low_vol_q: float | None = None
+    high_vol_q: float | None = None
+    size_with_pooled_pct: bool = False
 
 
 STRATEGIES: tuple[StrategySpec, ...] = (
     StrategySpec(name="rel2_tight_top8", mode="baseline_top8"),
+    StrategySpec(
+        name="rel2_tight_top8_weighted_pooledpct",
+        mode="baseline_top8_weighted",
+        pooled_q=0.975,
+        size_with_pooled_pct=True,
+    ),
     StrategySpec(name="pooled_norm_q97_5", mode="pooled", pooled_q=0.975),
     StrategySpec(name="pooled_norm_q99", mode="pooled", pooled_q=0.99),
     StrategySpec(
@@ -226,6 +235,12 @@ STRATEGIES: tuple[StrategySpec, ...] = (
         mode="pooled",
         pooled_q=0.975,
         require_xs_top_quantile=0.80,
+    ),
+    StrategySpec(
+        name="dynamic_pooled_q95_98",
+        mode="dynamic_pooled",
+        low_vol_q=0.95,
+        high_vol_q=0.98,
     ),
 )
 
@@ -280,8 +295,9 @@ def _build_panel(bars: pd.DataFrame, spy: pd.DataFrame, cfg: Config) -> pd.DataF
     spy["close"] = pd.to_numeric(spy["close"], errors="coerce")
     spy = spy.dropna(subset=["close"]).copy()
     spy["spy_ret_63"] = spy["close"] / spy["close"].shift(look) - 1.0
+    spy["spy_vol_21"] = spy["close"].pct_change().rolling(cfg.vol_window_days, min_periods=cfg.vol_window_days).std()
     spy = spy.rename(columns={"close": "spy_close"})
-    frame = frame.merge(spy[["timestamp", "spy_close", "spy_ret_63"]], on="timestamp", how="left")
+    frame = frame.merge(spy[["timestamp", "spy_close", "spy_ret_63", "spy_vol_21"]], on="timestamp", how="left")
     frame["rel_strength_63"] = frame["past_return"] - frame["spy_ret_63"]
 
     frame = frame.replace([np.inf, -np.inf], np.nan).dropna(
@@ -295,6 +311,7 @@ def _build_panel(bars: pd.DataFrame, spy: pd.DataFrame, cfg: Config) -> pd.DataF
             "rank_pct",
             "spy_close",
             "rel_strength_63",
+            "spy_vol_21",
         ]
     )
     frame["year"] = frame["timestamp"].dt.year
@@ -374,6 +391,14 @@ def _build_trades(test_panel: pd.DataFrame, cfg: Config, spec: StrategySpec, fol
             if spec.mode == "baseline_top8":
                 passed = rank >= 0.92
                 raw_strength = rank - 0.92
+            elif spec.mode == "baseline_top8_weighted":
+                passed = rank >= 0.92
+                raw_strength = rank - 0.92
+                if spec.size_with_pooled_pct and q_col is not None and q_col in g.columns:
+                    qv = float(r[q_col])
+                    sn = float(r["score_norm"])
+                    if np.isfinite(qv) and np.isfinite(sn):
+                        raw_strength = raw_strength * float(max(0.2, sn - qv + 1.0))
             elif spec.mode == "pooled":
                 if q_col is None or q_col not in g.columns:
                     continue
@@ -382,6 +407,18 @@ def _build_trades(test_panel: pd.DataFrame, cfg: Config, spec: StrategySpec, fol
                 passed = np.isfinite(qv) and np.isfinite(sn) and (sn >= qv)
                 if spec.require_xs_top_quantile is not None:
                     passed = bool(passed and rank >= float(spec.require_xs_top_quantile))
+                raw_strength = sn - qv if np.isfinite(sn) and np.isfinite(qv) else 0.0
+            elif spec.mode == "dynamic_pooled":
+                low_q_col = _quantile_col(float(spec.low_vol_q)) if spec.low_vol_q is not None else None
+                high_q_col = _quantile_col(float(spec.high_vol_q)) if spec.high_vol_q is not None else None
+                if low_q_col is None or high_q_col is None or low_q_col not in g.columns or high_q_col not in g.columns:
+                    continue
+                spy_vol = float(r["spy_vol_21"])
+                vol_med = float(test_panel["spy_vol_21"].median())
+                use_col = high_q_col if np.isfinite(spy_vol) and spy_vol >= vol_med else low_q_col
+                qv = float(r[use_col])
+                sn = float(r["score_norm"])
+                passed = np.isfinite(qv) and np.isfinite(sn) and (sn >= qv)
                 raw_strength = sn - qv if np.isfinite(sn) and np.isfinite(qv) else 0.0
             else:
                 raise ValueError(f"Unknown mode: {spec.mode}")
@@ -572,7 +609,13 @@ def main() -> None:
         raise ValueError("Missing Yahoo data for requested universe or SPY benchmark.")
 
     panel = _build_panel(bars, spy_df, cfg)
-    pooled_qs = sorted({float(s.pooled_q) for s in STRATEGIES if s.pooled_q is not None})
+    pooled_qs = sorted(
+        {
+            *{float(s.pooled_q) for s in STRATEGIES if s.pooled_q is not None},
+            *{float(s.low_vol_q) for s in STRATEGIES if s.low_vol_q is not None},
+            *{float(s.high_vol_q) for s in STRATEGIES if s.high_vol_q is not None},
+        }
+    )
     thresholds = _build_pooled_threshold_frame(panel, pooled_qs, min_history_obs=cfg.pooled_min_history_obs)
     panel = panel.merge(thresholds, on="timestamp", how="left")
 
