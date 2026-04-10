@@ -598,6 +598,23 @@ def _portfolio_metrics(daily: pd.DataFrame, trades: pd.DataFrame) -> dict[str, f
         if len(daily) > 1 and float(daily["alpha_return"].std(ddof=1)) > 0
         else float("nan")
     )
+    alpha_daily = pd.to_numeric(daily["alpha_return"], errors="coerce")
+    alpha_daily_mean = float(alpha_daily.mean()) if len(alpha_daily) else float("nan")
+    alpha_daily_ann_mean = float(alpha_daily_mean * 252.0) if np.isfinite(alpha_daily_mean) else float("nan")
+    alpha_daily_hit = float((alpha_daily > 0).mean()) if len(alpha_daily) else float("nan")
+    alpha_trade = pd.to_numeric(trades.get("alpha_return"), errors="coerce")
+    # Proxy for capital-weighted trade alpha: stronger signals held longer get larger weight.
+    trade_w = (
+        pd.to_numeric(trades.get("signal_strength"), errors="coerce").abs()
+        * pd.to_numeric(trades.get("hold_days"), errors="coerce").clip(lower=1.0)
+    )
+    mask = alpha_trade.notna() & trade_w.notna() & (trade_w > 0)
+    alpha_trade_weighted_proxy = (
+        float(np.average(alpha_trade[mask], weights=trade_w[mask]))
+        if bool(mask.any())
+        else float("nan")
+    )
+
     return {
         "n_days": float(len(daily)),
         "n_trades": float(len(trades)),
@@ -606,11 +623,15 @@ def _portfolio_metrics(daily: pd.DataFrame, trades: pd.DataFrame) -> dict[str, f
         "max_drawdown": max_dd,
         "annualized_sharpe_net": sr_n,
         "annualized_sharpe_alpha": sr_a,
+        "mean_daily_alpha": alpha_daily_mean,
+        "annualized_mean_alpha_daily": alpha_daily_ann_mean,
+        "daily_alpha_hit_rate": alpha_daily_hit,
         "avg_turnover": float(daily["turnover"].mean()),
         "avg_gross_exposure": float(daily["gross_exposure"].mean()),
         "mean_trade_alpha": float(pd.to_numeric(trades.get("alpha_return"), errors="coerce").mean())
         if not trades.empty
         else float("nan"),
+        "mean_trade_alpha_weighted_proxy": alpha_trade_weighted_proxy,
     }
 
 
