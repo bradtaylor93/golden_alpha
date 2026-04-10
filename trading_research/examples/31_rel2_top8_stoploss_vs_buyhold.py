@@ -8,31 +8,200 @@ Focus:
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import math
 from dataclasses import dataclass
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
 from trading_research.data.vendors.yahoo import YahooMarketDataVendor
 
+UNIVERSE_50 = [
+    "AAPL",
+    "MSFT",
+    "AMZN",
+    "GOOGL",
+    "META",
+    "NVDA",
+    "TSLA",
+    "BRK-B",
+    "JPM",
+    "JNJ",
+    "V",
+    "UNH",
+    "HD",
+    "PG",
+    "MA",
+    "XOM",
+    "CVX",
+    "ABBV",
+    "BAC",
+    "KO",
+    "PEP",
+    "COST",
+    "AVGO",
+    "TMO",
+    "MRK",
+    "WMT",
+    "DIS",
+    "ADBE",
+    "CRM",
+    "NFLX",
+    "PFE",
+    "CSCO",
+    "ACN",
+    "MCD",
+    "ABT",
+    "DHR",
+    "LIN",
+    "AMD",
+    "ORCL",
+    "INTC",
+    "NKE",
+    "WFC",
+    "QCOM",
+    "TXN",
+    "UPS",
+    "CAT",
+    "GS",
+    "HON",
+    "LOW",
+    "AMGN",
+]
 
-def _load_universe_170() -> tuple[str, ...]:
-    script_path = Path("trading_research/examples/30_baseline_rel2_simple_improvements.py")
-    if not script_path.exists():
-        raise FileNotFoundError("Could not load universe source from examples/30 file.")
-    spec = importlib.util.spec_from_file_location("simple_improvements_30", script_path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("Failed to create import spec for examples/30.")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    universe = getattr(module, "UNIVERSE_170", None)
-    if universe is None:
-        raise AttributeError("UNIVERSE_170 not found in examples/30 script.")
-    return tuple(universe)
+EXTRA_UNIVERSE_40 = [
+    "BLK",
+    "BKNG",
+    "C",
+    "CMCSA",
+    "COP",
+    "DE",
+    "ELV",
+    "GE",
+    "GILD",
+    "IBM",
+    "ISRG",
+    "LMT",
+    "MDT",
+    "MMM",
+    "MO",
+    "MS",
+    "MU",
+    "NOW",
+    "PANW",
+    "PLD",
+    "PM",
+    "PYPL",
+    "RTX",
+    "SBUX",
+    "SCHW",
+    "SPGI",
+    "SYK",
+    "T",
+    "TJX",
+    "TMUS",
+    "UBER",
+    "UNP",
+    "VRTX",
+    "AXP",
+    "CB",
+    "ETN",
+    "INTU",
+    "MDLZ",
+    "PGR",
+    "SO",
+]
+
+EXTRA_UNIVERSE_40_MORE = [
+    "AON",
+    "APH",
+    "CCI",
+    "CL",
+    "COF",
+    "CSX",
+    "DD",
+    "DOW",
+    "DUK",
+    "ECL",
+    "EMR",
+    "EQIX",
+    "EW",
+    "FDX",
+    "FIS",
+    "FITB",
+    "GD",
+    "HCA",
+    "ICE",
+    "ILMN",
+    "KMB",
+    "KMI",
+    "KLAC",
+    "LHX",
+    "MAR",
+    "MMC",
+    "MNST",
+    "MSI",
+    "NSC",
+    "OXY",
+    "PSA",
+    "REGN",
+    "ROP",
+    "SHW",
+    "SNPS",
+    "STZ",
+    "TFC",
+    "TT",
+    "VLO",
+    "WMB",
+]
+
+EXTRA_UNIVERSE_40_NEW = [
+    "ADP",
+    "AEP",
+    "AFL",
+    "AJG",
+    "ALL",
+    "AMP",
+    "APD",
+    "AZO",
+    "BDX",
+    "BIIB",
+    "BRO",
+    "CDNS",
+    "CHD",
+    "CPRT",
+    "CTAS",
+    "D",
+    "DG",
+    "DLR",
+    "EXC",
+    "FAST",
+    "FANG",
+    "GIS",
+    "HAL",
+    "KR",
+    "LEN",
+    "LH",
+    "MCHP",
+    "MCK",
+    "MET",
+    "NEM",
+    "ORLY",
+    "PAYX",
+    "PEG",
+    "PPG",
+    "PRU",
+    "ROST",
+    "SRE",
+    "TRV",
+    "VRSK",
+    "YUM",
+]
+
+UNIVERSE_170 = tuple(
+    dict.fromkeys([*UNIVERSE_50, *EXTRA_UNIVERSE_40, *EXTRA_UNIVERSE_40_MORE, *EXTRA_UNIVERSE_40_NEW])
+)
 
 
 @dataclass(frozen=True)
