@@ -225,6 +225,8 @@ class Config:
     max_abs_weight_per_asset: float = 0.04
     transaction_cost_bps_per_side: float = 10.0
     slippage_bps_per_side: float = 5.0
+    spy_vol_scale_min: float = 0.50
+    spy_vol_scale_max: float = 1.25
 
 
 @dataclass(frozen=True)
@@ -233,6 +235,7 @@ class StrategySpec:
     top_quantile: float
     require_spy_up: bool
     require_low_vol: bool
+    vol_scaled_exposure: bool
 
 
 STRATEGIES: tuple[StrategySpec, ...] = (
@@ -241,42 +244,56 @@ STRATEGIES: tuple[StrategySpec, ...] = (
         top_quantile=0.90,
         require_spy_up=False,
         require_low_vol=False,
+        vol_scaled_exposure=False,
     ),
     StrategySpec(
         name="rel2_spyup",
         top_quantile=0.90,
         require_spy_up=True,
         require_low_vol=False,
+        vol_scaled_exposure=False,
     ),
     StrategySpec(
         name="rel2_spyup_lowvol",
         top_quantile=0.90,
         require_spy_up=True,
         require_low_vol=True,
+        vol_scaled_exposure=False,
     ),
     StrategySpec(
         name="rel2_spyup_tight_top8",
         top_quantile=0.92,
         require_spy_up=True,
         require_low_vol=False,
+        vol_scaled_exposure=False,
     ),
     StrategySpec(
         name="rel2_tight_top8",
         top_quantile=0.92,
         require_spy_up=False,
         require_low_vol=False,
+        vol_scaled_exposure=False,
+    ),
+    StrategySpec(
+        name="rel2_tight_top8_spyvol_scaled",
+        top_quantile=0.92,
+        require_spy_up=False,
+        require_low_vol=False,
+        vol_scaled_exposure=True,
     ),
     StrategySpec(
         name="rel2_tight_top5",
         top_quantile=0.95,
         require_spy_up=False,
         require_low_vol=False,
+        vol_scaled_exposure=False,
     ),
     StrategySpec(
         name="rel2_lowvol",
         top_quantile=0.90,
         require_spy_up=False,
         require_low_vol=True,
+        vol_scaled_exposure=False,
     ),
 )
 
@@ -351,7 +368,7 @@ def _build_panel(bars: pd.DataFrame, spy: pd.DataFrame, cfg: Config) -> pd.DataF
     return frame.reset_index(drop=True)
 
 
-def _weights_from_active(active: pd.DataFrame, cfg: Config, assets: list[str]) -> pd.Series:
+def _weights_from_active(active: pd.DataFrame, cfg: Config, assets: list[str], gross_target: float) -> pd.Series:
     w = pd.Series(0.0, index=assets, dtype=float)
     if active.empty:
         return w
@@ -363,7 +380,7 @@ def _weights_from_active(active: pd.DataFrame, cfg: Config, assets: list[str]) -
     denom = float(np.sum(np.abs(by_asset["raw_signed"])))
     if denom <= 0.0:
         return w
-    by_asset["w"] = (by_asset["raw_signed"] / denom) * cfg.gross_target
+    by_asset["w"] = (by_asset["raw_signed"] / denom) * float(gross_target)
     by_asset["w"] = by_asset["w"].clip(-cfg.max_abs_weight_per_asset, cfg.max_abs_weight_per_asset)
     for _, r in by_asset.iterrows():
         a = str(r["asset"])
@@ -437,7 +454,8 @@ def _simulate_fold(
     spy_df: pd.DataFrame,
     cfg: Config,
     fold_id: str,
-    strategy_name: str,
+    strategy: StrategySpec,
+    spy_vol_anchor: float,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     close = test_panel.pivot(index="timestamp", columns="asset", values="close").sort_index().ffill()
     rets = close.pct_change().fillna(0.0)
@@ -451,6 +469,7 @@ def _simulate_fold(
     spy = spy.dropna(subset=["timestamp"]).sort_values("timestamp")
     spy = spy.set_index("timestamp")["close"].reindex(rets.index).ffill()
     spy_ret = spy.pct_change().fillna(0.0)
+    spy_vol_by_date = test_panel.groupby("timestamp")["spy_vol_21"].median()
 
     t = trades.copy()
     if t.empty:
@@ -473,7 +492,18 @@ def _simulate_fold(
         rows: list[dict[str, float | str]] = []
         for i in range(1, len(dates)):
             active = t[(t["start_idx"] <= i) & (t["end_idx"] >= i)]
-            w = _weights_from_active(active, cfg, assets)
+            ts_i = pd.Timestamp(dates[i])
+            if strategy.vol_scaled_exposure:
+                spy_vol_now = float(spy_vol_by_date.get(ts_i, np.nan))
+                if np.isfinite(spy_vol_now) and spy_vol_now > 0.0 and np.isfinite(spy_vol_anchor) and spy_vol_anchor > 0.0:
+                    raw_scale = spy_vol_anchor / spy_vol_now
+                    exposure_scale = float(np.clip(raw_scale, cfg.spy_vol_scale_min, cfg.spy_vol_scale_max))
+                else:
+                    exposure_scale = 1.0
+            else:
+                exposure_scale = 1.0
+            gross_target_day = cfg.gross_target * exposure_scale
+            w = _weights_from_active(active, cfg, assets, gross_target=gross_target_day)
             gross = float(np.dot(w.values, rets.iloc[i].reindex(assets).fillna(0.0).values))
             turnover = float(np.abs(w - prev_w).sum())
             cost = turnover * one_way
@@ -487,6 +517,7 @@ def _simulate_fold(
                     "alpha_return": net - spy_r,
                     "turnover": turnover,
                     "gross_exposure": float(np.abs(w).sum()),
+                    "exposure_scale": exposure_scale,
                 }
             )
             prev_w = w
@@ -498,7 +529,7 @@ def _simulate_fold(
     out["running_max"] = out["equity"].cummax()
     out["drawdown"] = out["equity"] / out["running_max"] - 1.0
     out["fold_id"] = fold_id
-    out["strategy"] = strategy_name
+    out["strategy"] = strategy.name
 
     trade_rows: list[dict[str, float | str]] = []
     if not t.empty:
@@ -522,7 +553,7 @@ def _simulate_fold(
             trade_rows.append(
                 {
                     "fold_id": fold_id,
-                    "strategy": strategy_name,
+                    "strategy": strategy.name,
                     "asset": asset,
                     "entry_timestamp": str(entry_ts),
                     "exit_timestamp": str(exit_ts),
@@ -626,7 +657,8 @@ def main() -> None:
                 spy_df=spy_df,
                 cfg=cfg,
                 fold_id=fold_id,
-                strategy_name=spec.name,
+                strategy=spec,
+                spy_vol_anchor=spy_vol_threshold,
             )
             if daily.empty:
                 continue
@@ -733,6 +765,8 @@ def main() -> None:
             "hold_days": cfg.hold_days,
             "min_train_years": cfg.min_train_years,
             "one_way_cost_return": _one_way_cost_return(cfg),
+            "spy_vol_scale_min": cfg.spy_vol_scale_min,
+            "spy_vol_scale_max": cfg.spy_vol_scale_max,
         },
         "uplift": uplift,
     }
