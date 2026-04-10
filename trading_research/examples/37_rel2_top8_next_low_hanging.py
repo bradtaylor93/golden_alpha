@@ -258,6 +258,7 @@ class ExperimentSpec:
     use_reentry_cooldown: bool = False
     use_turnover_smoothing: bool = False
     use_cluster_caps: bool = True
+    cooldown_days_override: int | None = None
 
 
 EXPERIMENTS: tuple[ExperimentSpec, ...] = (
@@ -267,6 +268,13 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ExperimentSpec(name="nhf3_vol_norm_trail", use_vol_norm_trail=True),
     ExperimentSpec(name="nhf4_regime_buffer", use_regime_buffer=True),
     ExperimentSpec(name="nhf5_reentry_cooldown", use_reentry_cooldown=True),
+    ExperimentSpec(name="nhf5_reentry_cooldown_05d", use_reentry_cooldown=True, cooldown_days_override=5),
+    ExperimentSpec(name="nhf5_reentry_cooldown_15d", use_reentry_cooldown=True, cooldown_days_override=15),
+    ExperimentSpec(
+        name="nhf7_cooldown10_voltrail",
+        use_reentry_cooldown=True,
+        use_vol_norm_trail=True,
+    ),
     ExperimentSpec(
         name="nhf6_cluster_caps_turnover",
         use_turnover_smoothing=True,
@@ -497,7 +505,8 @@ def _build_trades(
             )
             last_end_by_asset[asset] = exit_idx
             if exp.use_reentry_cooldown:
-                cooldown_until_by_asset[asset] = exit_idx + cfg.reentry_cooldown_days
+                cd_days = int(exp.cooldown_days_override) if exp.cooldown_days_override is not None else cfg.reentry_cooldown_days
+                cooldown_until_by_asset[asset] = exit_idx + cd_days
     return pd.DataFrame(rows)
 
 
