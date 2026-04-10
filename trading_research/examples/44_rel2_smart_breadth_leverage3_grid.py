@@ -398,6 +398,29 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         gross_target_override=3.0,
         max_abs_weight_per_asset_override=0.12,
     ),
+    # 3x hard-risk-cap variant: stress throttle + tighter stops.
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_hard_risk_cap",
+        use_reentry_cooldown=True,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_gross_target=True,
+        stressed_gross_scale_override=0.75,
+        calm_gross_scale_override=1.00,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.012,
+        custom_additional_edge_threshold=0.012,
+        use_vol_norm_trail=True,
+        use_hard_stop_loss=True,
+        hard_stop_loss_pct_override=0.12,
+        use_quality_priority_cap=True,
+        use_turnover_smoothing=True,
+        top_quantile_override=0.94,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+    ),
 )
 
 
