@@ -267,6 +267,12 @@ STRATEGIES: tuple[StrategySpec, ...] = (
         require_low_vol=False,
     ),
     StrategySpec(
+        name="rel2_tight_top5",
+        top_quantile=0.95,
+        require_spy_up=False,
+        require_low_vol=False,
+    ),
+    StrategySpec(
         name="rel2_lowvol",
         top_quantile=0.90,
         require_spy_up=False,
