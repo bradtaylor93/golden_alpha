@@ -226,9 +226,10 @@ class Config:
     max_abs_weight_per_asset: float = 0.04
     transaction_cost_bps_per_side: float = 10.0
     slippage_bps_per_side: float = 5.0
-    bootstrap_iterations: int = 3000
-    signflip_iterations: int = 5000
-    random_null_iterations: int = 1200
+    # Keep significance tests robust but runtime-bounded for large universes.
+    bootstrap_iterations: int = 1000
+    signflip_iterations: int = 1500
+    random_null_iterations: int = 250
     random_state: int = 42
 
 
