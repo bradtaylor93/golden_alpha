@@ -281,6 +281,13 @@ class ExperimentSpec:
     use_dynamic_gross_target: bool = False
     require_spy_up_for_longs: bool = False
     require_spy_down_for_shorts: bool = False
+    allow_shorts: bool = True
+    use_custom_edge_threshold: bool = False
+    custom_base_edge_threshold: float | None = None
+    custom_additional_edge_threshold: float | None = None
+    gross_target_override: float | None = None
+    max_abs_weight_per_asset_override: float | None = None
+    portfolio_vol_target_annual_override: float | None = None
     top_quantile_override: float | None = None
     rel_strength_threshold_override: float | None = None
     cooldown_days_override: int | None = None
@@ -341,6 +348,44 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         require_spy_down_for_shorts=True,
         top_quantile_override=0.97,
         rel_strength_threshold_override=0.04,
+    ),
+    ExperimentSpec(
+        name="sf6_top1_rel5_long_only_ultra_selective",
+        use_reentry_cooldown=True,
+        use_regime_buffer=True,
+        use_portfolio_vol_target=True,
+        use_dynamic_gross_target=True,
+        use_quality_priority_cap=True,
+        require_spy_up_for_longs=True,
+        allow_shorts=False,
+        top_quantile_override=0.99,
+        rel_strength_threshold_override=0.05,
+        cooldown_days_override=20,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.035,
+        custom_additional_edge_threshold=0.025,
+        gross_target_override=0.80,
+        max_abs_weight_per_asset_override=0.03,
+        portfolio_vol_target_annual_override=0.12,
+    ),
+    ExperimentSpec(
+        name="sf7_top2_rel4_long_only_high_quality",
+        use_reentry_cooldown=True,
+        use_regime_buffer=True,
+        use_portfolio_vol_target=True,
+        use_dynamic_gross_target=True,
+        use_quality_priority_cap=True,
+        require_spy_up_for_longs=True,
+        allow_shorts=False,
+        top_quantile_override=0.98,
+        rel_strength_threshold_override=0.04,
+        cooldown_days_override=15,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.030,
+        custom_additional_edge_threshold=0.020,
+        gross_target_override=0.90,
+        max_abs_weight_per_asset_override=0.035,
+        portfolio_vol_target_annual_override=0.14,
     ),
 )
 
@@ -490,6 +535,8 @@ def _build_trades(
             trend_sign = float(np.sign(float(r["past_return"])))
             if not np.isfinite(trend_sign) or trend_sign == 0.0:
                 continue
+            if (not exp.allow_shorts) and trend_sign < 0:
+                continue
             spy_up_now = float(r["spy_up"]) > 0.5
             if exp.require_spy_up_for_longs and trend_sign > 0 and not spy_up_now:
                 continue
@@ -509,7 +556,17 @@ def _build_trades(
                 stressed = (not spy_up_now) or (
                     np.isfinite(spy_vol) and np.isfinite(train_spy_vol_median) and spy_vol > train_spy_vol_median
                 )
-                req = cfg.regime_buffer_base_edge + (cfg.regime_buffer_additional if stressed else 0.0)
+                base_req = (
+                    float(exp.custom_base_edge_threshold)
+                    if exp.use_custom_edge_threshold and exp.custom_base_edge_threshold is not None
+                    else cfg.regime_buffer_base_edge
+                )
+                add_req = (
+                    float(exp.custom_additional_edge_threshold)
+                    if exp.use_custom_edge_threshold and exp.custom_additional_edge_threshold is not None
+                    else cfg.regime_buffer_additional
+                )
+                req = base_req + (add_req if stressed else 0.0)
                 if edge_proxy < req:
                     continue
             cands.append(
@@ -659,6 +716,8 @@ def _weights_from_active(
     assets: list[str],
     cluster_map: dict[str, int] | None,
     use_cluster_caps: bool,
+    gross_target: float | None = None,
+    max_abs_weight_per_asset: float | None = None,
 ) -> pd.Series:
     w = pd.Series(0.0, index=assets, dtype=float)
     if active.empty:
@@ -680,8 +739,14 @@ def _weights_from_active(
     denom = float(np.sum(np.abs(by_asset["raw_signed"])))
     if denom <= 0.0:
         return w
-    by_asset["weight"] = (by_asset["raw_signed"] / denom) * cfg.gross_target
-    by_asset["weight"] = by_asset["weight"].clip(-cfg.max_abs_weight_per_asset, cfg.max_abs_weight_per_asset)
+    gross_target_local = float(gross_target) if gross_target is not None else cfg.gross_target
+    max_abs_weight_local = (
+        float(max_abs_weight_per_asset)
+        if max_abs_weight_per_asset is not None
+        else cfg.max_abs_weight_per_asset
+    )
+    by_asset["weight"] = (by_asset["raw_signed"] / denom) * gross_target_local
+    by_asset["weight"] = by_asset["weight"].clip(-max_abs_weight_local, max_abs_weight_local)
     for _, r in by_asset.iterrows():
         name = str(r["asset"])
         if name in w.index:
@@ -720,6 +785,20 @@ def _simulate_fold(
     spy_up = (spy > spy_ma200).astype(float).fillna(0.0)
     spy_vol21 = spy.pct_change().rolling(cfg.vol_window_days, min_periods=cfg.vol_window_days).std()
 
+    gross_target_local = (
+        float(exp.gross_target_override) if exp.gross_target_override is not None else cfg.gross_target
+    )
+    max_abs_weight_local = (
+        float(exp.max_abs_weight_per_asset_override)
+        if exp.max_abs_weight_per_asset_override is not None
+        else cfg.max_abs_weight_per_asset
+    )
+    portfolio_vol_target_local = (
+        float(exp.portfolio_vol_target_annual_override)
+        if exp.portfolio_vol_target_annual_override is not None
+        else cfg.portfolio_vol_target_annual
+    )
+
     t = trades.copy()
     if t.empty:
         out = pd.DataFrame(
@@ -748,6 +827,8 @@ def _simulate_fold(
                 assets=assets,
                 cluster_map=cluster_map,
                 use_cluster_caps=exp.use_cluster_caps,
+                gross_target=gross_target_local,
+                max_abs_weight_per_asset=max_abs_weight_local,
             )
             if exp.use_turnover_smoothing:
                 w = (1.0 - cfg.turnover_smoothing_lambda) * target_w + cfg.turnover_smoothing_lambda * prev_w
@@ -764,7 +845,7 @@ def _simulate_fold(
                 )
                 gross_scale = cfg.stressed_gross_scale if stressed else cfg.calm_gross_scale
                 w = w * float(gross_scale)
-                w = w.clip(-cfg.max_abs_weight_per_asset, cfg.max_abs_weight_per_asset)
+                w = w.clip(-max_abs_weight_local, max_abs_weight_local)
 
             if exp.use_portfolio_vol_target:
                 if len(hist_net) >= cfg.portfolio_vol_lookback_days:
@@ -772,14 +853,14 @@ def _simulate_fold(
                     if np.isfinite(rv) and rv > 1e-9:
                         scale = float(
                             np.clip(
-                                cfg.portfolio_vol_target_annual / rv,
+                                portfolio_vol_target_local / rv,
                                 cfg.portfolio_vol_scale_min,
                                 cfg.portfolio_vol_scale_max,
                             )
                         )
                         w = w * scale
                 # Re-apply per-asset cap after scaling.
-                w = w.clip(-cfg.max_abs_weight_per_asset, cfg.max_abs_weight_per_asset)
+                w = w.clip(-max_abs_weight_local, max_abs_weight_local)
 
             gross = float(np.dot(w.values, rets.iloc[i].reindex(assets).fillna(0.0).values))
             turnover = float(np.abs(w - prev_w).sum())
