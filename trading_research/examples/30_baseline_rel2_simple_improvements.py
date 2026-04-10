@@ -236,6 +236,8 @@ class StrategySpec:
     require_spy_up: bool
     require_low_vol: bool
     vol_scaled_exposure: bool
+    vol_scale_min: float | None = None
+    vol_scale_max: float | None = None
 
 
 STRATEGIES: tuple[StrategySpec, ...] = (
@@ -280,6 +282,26 @@ STRATEGIES: tuple[StrategySpec, ...] = (
         require_spy_up=False,
         require_low_vol=False,
         vol_scaled_exposure=True,
+        vol_scale_min=0.50,
+        vol_scale_max=1.25,
+    ),
+    StrategySpec(
+        name="rel2_tight_top8_spyvol_scaled_60_120",
+        top_quantile=0.92,
+        require_spy_up=False,
+        require_low_vol=False,
+        vol_scaled_exposure=True,
+        vol_scale_min=0.60,
+        vol_scale_max=1.20,
+    ),
+    StrategySpec(
+        name="rel2_tight_top8_spyvol_scaled_70_110",
+        top_quantile=0.92,
+        require_spy_up=False,
+        require_low_vol=False,
+        vol_scaled_exposure=True,
+        vol_scale_min=0.70,
+        vol_scale_max=1.10,
     ),
     StrategySpec(
         name="rel2_tight_top5",
@@ -497,7 +519,9 @@ def _simulate_fold(
                 spy_vol_now = float(spy_vol_by_date.get(ts_i, np.nan))
                 if np.isfinite(spy_vol_now) and spy_vol_now > 0.0 and np.isfinite(spy_vol_anchor) and spy_vol_anchor > 0.0:
                     raw_scale = spy_vol_anchor / spy_vol_now
-                    exposure_scale = float(np.clip(raw_scale, cfg.spy_vol_scale_min, cfg.spy_vol_scale_max))
+                    min_scale = float(strategy.vol_scale_min) if strategy.vol_scale_min is not None else cfg.spy_vol_scale_min
+                    max_scale = float(strategy.vol_scale_max) if strategy.vol_scale_max is not None else cfg.spy_vol_scale_max
+                    exposure_scale = float(np.clip(raw_scale, min_scale, max_scale))
                 else:
                     exposure_scale = 1.0
             else:
