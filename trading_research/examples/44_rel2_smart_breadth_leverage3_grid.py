@@ -334,6 +334,19 @@ class Config:
     asset_efficacy_min_obs: int = 120
     asset_efficacy_quantile: float = 0.55
     smart_liquidity_min_rank_pct: float = 0.40
+    # Calibrated confidence and crowding controls.
+    confidence_calib_rel_weight: float = 1.0
+    confidence_calib_rank_weight: float = 0.7
+    confidence_calib_vol_penalty: float = 0.6
+    confidence_calib_base: float = 0.9
+    confidence_calib_scale: float = 0.8
+    corr_lookback_days: int = 63
+    corr_scale_min: float = 0.75
+    corr_scale_max: float = 1.05
+    short_rel_strength_buffer: float = 0.01
+    short_rank_buffer: float = 0.02
+    profit_lock_trigger: float = 0.10
+    profit_lock_trail: float = 0.06
 
 
 @dataclass(frozen=True)
@@ -373,6 +386,24 @@ class ExperimentSpec:
     hard_stop_loss_pct_override: float | None = None
     use_asset_efficacy_filter: bool = False
     asset_efficacy_quantile_override: float | None = None
+    use_confidence_calibrated_sizing: bool = False
+    use_corr_aware_gross_scaler: bool = False
+    short_rel_strength_threshold_override: float | None = None
+    short_top_quantile_override: float | None = None
+    use_profit_lock_exit: bool = False
+    profit_lock_threshold_override: float | None = None
+    profit_lock_trail_override: float | None = None
+    # Sharpe brainstorming pack toggles.
+    use_calibrated_confidence_sizing: bool = False
+    use_corr_aware_gross_scaler: bool = False
+    use_profit_lock_exit: bool = False
+    short_top_quantile_override: float | None = None
+    short_rel_strength_threshold_override: float | None = None
+    # Brainstorm ablation add-ons.
+    use_calibrated_confidence: bool = False
+    use_corr_aware_gross: bool = False
+    use_asymmetric_short_filter: bool = False
+    use_profit_lock_exit: bool = False
 
 
 EXPERIMENTS: tuple[ExperimentSpec, ...] = (
@@ -573,6 +604,74 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         gross_target_override=2.6,
         max_abs_weight_per_asset_override=0.09,
     ),
+    # A1: calibrated confidence sizing overlay (no other structural changes).
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_a1_conf_calibrated",
+        use_reentry_cooldown=True,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_confidence_calibration=True,
+    ),
+    # A2: A1 + correlation-aware gross scaler.
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_a2_conf_corr_gross",
+        use_reentry_cooldown=True,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_confidence_calibration=True,
+        use_corr_aware_gross_scaler=True,
+    ),
+    # A3: A2 + stricter short quality and lower short budget.
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_a3_conf_corr_shortq",
+        use_reentry_cooldown=True,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_confidence_calibration=True,
+        use_corr_aware_gross_scaler=True,
+        use_asymmetric_short_filter=True,
+        short_gross_fraction_override=0.70,
+    ),
+    # A4: A3 + profit-lock trailing exits.
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_a4_full_stack",
+        use_reentry_cooldown=True,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_confidence_calibration=True,
+        use_corr_aware_gross_scaler=True,
+        use_asymmetric_short_filter=True,
+        short_gross_fraction_override=0.70,
+        use_profit_lock_exit=True,
+    ),
 )
 
 
@@ -709,6 +808,54 @@ def _confidence_from_row(row: pd.Series, cfg: Config) -> float:
     rank_conf = float(np.clip((rank - cfg.top_quantile) / max(1e-6, 1.0 - cfg.top_quantile), 0.0, 1.0))
     rel_conf = float(np.clip((rel - cfg.rel_strength_threshold) / 0.05, 0.0, 1.0))
     return float(0.5 + 1.5 * (0.5 * rank_conf + 0.5 * rel_conf))
+
+
+def _build_confidence_calibrator(train_panel: pd.DataFrame) -> tuple[float, float]:
+    """Fit simple linear confidence calibration from train fold only."""
+    if train_panel.empty:
+        return 0.0, 0.0
+    p = train_panel[["asset", "timestamp", "close", "rank_pct", "rel_strength_63", "past_return"]].copy()
+    p = p.sort_values(["asset", "timestamp"]).reset_index(drop=True)
+    p["rank_pct"] = pd.to_numeric(p["rank_pct"], errors="coerce")
+    p["rel_strength_63"] = pd.to_numeric(p["rel_strength_63"], errors="coerce")
+    p["past_return"] = pd.to_numeric(p["past_return"], errors="coerce")
+    p["close"] = pd.to_numeric(p["close"], errors="coerce")
+    p = p.replace([np.inf, -np.inf], np.nan).dropna(subset=["rank_pct", "rel_strength_63", "past_return", "close"])
+    if p.empty:
+        return 0.0, 0.0
+
+    p["trend_sign"] = np.sign(p["past_return"])
+    p = p[p["trend_sign"] != 0.0].copy()
+    if p.empty:
+        return 0.0, 0.0
+    p["fwd_ret"] = p.groupby("asset", sort=False)["close"].shift(-1) / p["close"].replace(0.0, np.nan) - 1.0
+    p = p.replace([np.inf, -np.inf], np.nan).dropna(subset=["fwd_ret"])
+    if p.empty:
+        return 0.0, 0.0
+
+    rank_centered = np.clip((p["rank_pct"] - 0.90) / 0.10, 0.0, 1.0)
+    rel_centered = np.clip((p["rel_strength_63"] - 0.01) / 0.05, 0.0, 1.0)
+    p["conf_signal"] = 0.5 + 1.5 * (0.5 * rank_centered + 0.5 * rel_centered)
+    p["edge_1d"] = p["trend_sign"] * p["fwd_ret"]
+    p = p.replace([np.inf, -np.inf], np.nan).dropna(subset=["conf_signal", "edge_1d"])
+    if len(p) < 50:
+        return 0.0, 0.0
+
+    x = p["conf_signal"].to_numpy(dtype=float)
+    y = p["edge_1d"].to_numpy(dtype=float)
+    x_mu = float(np.mean(x))
+    y_mu = float(np.mean(y))
+    var_x = float(np.var(x, ddof=1))
+    if not np.isfinite(var_x) or var_x <= 1e-12:
+        return 0.0, y_mu
+    cov_xy = float(np.cov(x, y, ddof=1)[0, 1])
+    slope = cov_xy / var_x
+    intercept = y_mu - slope * x_mu
+    if not np.isfinite(slope):
+        slope = 0.0
+    if not np.isfinite(intercept):
+        intercept = y_mu if np.isfinite(y_mu) else 0.0
+    return float(slope), float(intercept)
 
 
 def _build_trades(
@@ -999,6 +1146,25 @@ def _weights_from_active(
     return w
 
 
+def _cross_sectional_abs_corr(active: pd.DataFrame, returns_frame: pd.DataFrame, idx: int, lookback: int) -> float:
+    if active.empty or idx <= 1 or returns_frame.empty:
+        return 0.0
+    assets = [str(a) for a in active["asset"].dropna().astype(str).unique().tolist()]
+    if len(assets) < 2:
+        return 0.0
+    hist = returns_frame.reindex(columns=assets).iloc[max(1, idx - lookback) : idx].copy()
+    hist = hist.dropna(axis=1, how="any")
+    if hist.shape[1] < 2 or hist.shape[0] < max(10, lookback // 3):
+        return 0.0
+    corr = hist.corr().to_numpy(dtype=float)
+    if corr.shape[0] < 2:
+        return 0.0
+    tri = np.triu_indices(corr.shape[0], k=1)
+    vals = np.abs(corr[tri])
+    vals = vals[np.isfinite(vals)]
+    return float(np.mean(vals)) if vals.size > 0 else 0.0
+
+
 def _simulate_fold(
     test_panel: pd.DataFrame,
     trades: pd.DataFrame,
@@ -1202,6 +1368,28 @@ def _simulate_fold(
                 }
             )
     return out, pd.DataFrame(trade_rows)
+
+
+def _rolling_corr_scalar(ret_wide: pd.DataFrame, end_idx: int, lookback: int) -> float:
+    if ret_wide.empty:
+        return float("nan")
+    lb = max(10, int(lookback))
+    if end_idx <= 1:
+        return float("nan")
+    start_idx = max(0, end_idx - lb + 1)
+    sl = ret_wide.iloc[start_idx : end_idx + 1]
+    if sl.shape[0] < 10 or sl.shape[1] < 2:
+        return float("nan")
+    corr = sl.corr().replace([np.inf, -np.inf], np.nan)
+    if corr.empty:
+        return float("nan")
+    vals = corr.to_numpy(dtype=float)
+    mask = np.triu(np.ones(vals.shape, dtype=bool), k=1)
+    pair = vals[mask]
+    pair = pair[np.isfinite(pair)]
+    if pair.size == 0:
+        return float("nan")
+    return float(np.mean(np.abs(pair)))
 
 
 def _simulate_buy_hold_all_fold(test_panel: pd.DataFrame, spy_df: pd.DataFrame, cfg: Config, fold_id: str) -> pd.DataFrame:
