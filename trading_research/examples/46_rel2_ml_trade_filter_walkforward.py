@@ -364,6 +364,12 @@ class Config:
     trade_filter_threshold_max_keep_fraction: float = 0.85
     trade_filter_threshold_min_selected: int = 40
     trade_filter_threshold_grid_size: int = 21
+    # Universe restriction by cross-sectional cashflow proxy (21d dollar volume rank).
+    cashflow_quartile_rank_threshold: float = 0.75
+    # Market stop-loss controls (using SPY drawdown from rolling peak).
+    market_stop_drawdown: float = 0.10
+    market_stop_recovery_drawdown: float = 0.04
+    market_stop_scale: float = 0.0
     # Global risk-on gate: do not open trades unless SPY 3-month return is positive.
     require_spy_3m_positive: bool = True
 
@@ -423,6 +429,13 @@ class ExperimentSpec:
     trade_filter_backfill_fraction_override: float | None = None
     use_trade_filter_recency_weighting: bool = False
     use_trade_filter_adaptive_threshold: bool = False
+    # Additional robustness variants requested by user.
+    use_cashflow_quartile_restrictor: bool = False
+    cashflow_quartile_threshold_override: float | None = None
+    use_market_stop_loss: bool = False
+    market_stop_drawdown_override: float | None = None
+    market_stop_recovery_override: float | None = None
+    market_stop_scale_override: float | None = None
 
 
 EXPERIMENTS: tuple[ExperimentSpec, ...] = (
@@ -690,6 +703,87 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         trade_filter_prob_quantile_override=0.57,
         use_trade_filter_recency_weighting=True,
         use_trade_filter_adaptive_threshold=True,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_market_stop_10",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        market_stop_drawdown_override=0.10,
+        market_stop_recovery_override=0.04,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_market_stop_12",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        market_stop_drawdown_override=0.12,
+        market_stop_recovery_override=0.05,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_cashflow_q4",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_cashflow_quartile_restrictor=True,
+        cashflow_quartile_threshold_override=0.75,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_market_stop_10_cashflow_q4",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        market_stop_drawdown_override=0.10,
+        market_stop_recovery_override=0.04,
+        use_cashflow_quartile_restrictor=True,
+        cashflow_quartile_threshold_override=0.75,
     ),
 )
 
@@ -1224,6 +1318,14 @@ def _build_trades(
             rel = float(r["rel_strength_63"])
             if rank < top_q or rel < rel_thresh:
                 continue
+            if exp.use_cashflow_quartile_restrictor:
+                cf_q = (
+                    float(exp.cashflow_quartile_threshold_override)
+                    if exp.cashflow_quartile_threshold_override is not None
+                    else float(cfg.cashflow_quartile_rank_threshold)
+                )
+                if float(r["adv_rank_pct"]) < float(np.clip(cf_q, 0.0, 1.0)):
+                    continue
             if exp.use_liquidity_filter and float(r["adv_rank_pct"]) < cfg.smart_liquidity_min_rank_pct:
                 continue
             if exp.use_asset_efficacy_filter and asset_efficacy_map:
@@ -1653,6 +1755,7 @@ def _simulate_fold(
     spy_ma200 = spy.rolling(200, min_periods=200).mean()
     spy_up = (spy > spy_ma200).astype(float).fillna(0.0)
     spy_vol21 = spy.pct_change().rolling(cfg.vol_window_days, min_periods=cfg.vol_window_days).std()
+    spy_drawdown = spy / spy.cummax() - 1.0
 
     gross_target_local = (
         float(exp.gross_target_override) if exp.gross_target_override is not None else cfg.gross_target
@@ -1684,6 +1787,7 @@ def _simulate_fold(
         one_way = _one_way_cost_return(cfg)
         hedge_one_way = _hedge_one_way_cost_return(cfg)
         prev_hedge = 0.0
+        market_stop_active = False
         rows: list[dict[str, float | str]] = []
         hist_net: list[float] = []
         hist_strat: list[float] = []
@@ -1746,6 +1850,31 @@ def _simulate_fold(
                         w = w * scale
                 # Re-apply per-asset cap after scaling.
                 w = w.clip(-max_abs_weight_local, max_abs_weight_local)
+            curr_spy_dd = float(spy_drawdown.iloc[i]) if np.isfinite(spy_drawdown.iloc[i]) else float("nan")
+            if exp.use_market_stop_loss:
+                stop_dd = (
+                    float(exp.market_stop_drawdown_override)
+                    if exp.market_stop_drawdown_override is not None
+                    else float(cfg.market_stop_drawdown)
+                )
+                rec_dd = (
+                    float(exp.market_stop_recovery_override)
+                    if exp.market_stop_recovery_override is not None
+                    else float(cfg.market_stop_recovery_drawdown)
+                )
+                stop_scale = (
+                    float(exp.market_stop_scale_override)
+                    if exp.market_stop_scale_override is not None
+                    else float(cfg.market_stop_scale)
+                )
+                stop_dd = float(max(1e-6, stop_dd))
+                rec_dd = float(np.clip(rec_dd, 0.0, stop_dd))
+                if (not market_stop_active) and np.isfinite(curr_spy_dd) and curr_spy_dd <= -stop_dd:
+                    market_stop_active = True
+                elif market_stop_active and np.isfinite(curr_spy_dd) and curr_spy_dd >= -rec_dd:
+                    market_stop_active = False
+                if market_stop_active:
+                    w = w * float(np.clip(stop_scale, 0.0, 1.0))
 
             gross = float(np.dot(w.values, rets.iloc[i].reindex(assets).fillna(0.0).values))
             turnover = float(np.abs(w - prev_w).sum())
@@ -1780,6 +1909,8 @@ def _simulate_fold(
                     "turnover": float(turnover + hedge_turnover),
                     "gross_exposure": float(np.abs(w).sum() + abs(hedge_beta)),
                     "hedge_beta": hedge_beta,
+                    "spy_drawdown": curr_spy_dd,
+                    "market_stop_active": float(1.0 if market_stop_active else 0.0),
                 }
             )
             prev_w = w
