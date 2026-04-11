@@ -683,6 +683,9 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         trade_filter_prob_quantile_override=0.57,
         use_trade_filter_recency_weighting=False,
         use_trade_filter_adaptive_threshold=False,
+        use_market_stop_loss=True,
+        market_stop_drawdown_override=0.12,
+        market_stop_recovery_override=0.05,
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_champion_v3_softw",
