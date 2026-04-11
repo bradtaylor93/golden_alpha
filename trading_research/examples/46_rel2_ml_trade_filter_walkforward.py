@@ -407,6 +407,7 @@ class ExperimentSpec:
     # ML trade filter (trained on train-fold win/loss trades).
     use_trade_filter_model: bool = False
     trade_filter_prob_quantile_override: float | None = None
+    use_trade_filter_hard_gate: bool = True
     use_trade_filter_soft_weighting: bool = False
 
 
@@ -515,6 +516,40 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         use_trade_filter_model=True,
         use_trade_filter_soft_weighting=True,
         trade_filter_prob_quantile_override=0.58,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_filter_q55_hybrid",
+        use_reentry_cooldown=True,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=False,
+        use_trade_filter_soft_weighting=True,
+        trade_filter_prob_quantile_override=0.55,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_filter_q60_hybrid",
+        use_reentry_cooldown=True,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=False,
+        use_trade_filter_soft_weighting=True,
+        trade_filter_prob_quantile_override=0.60,
     ),
 )
 
@@ -988,13 +1023,15 @@ def _build_trades(
             if trade_filter_model is not None and trade_filter_threshold is not None:
                 feat = pd.DataFrame([trade_feature], columns=list(TRADE_FILTER_FEATURES))
                 prob_keep = float(trade_filter_model.predict_proba(feat)[0, 1])
-                if not np.isfinite(prob_keep) or prob_keep < float(trade_filter_threshold):
+                if not np.isfinite(prob_keep):
+                    prob_keep = 0.50
+                if exp.use_trade_filter_hard_gate and prob_keep < float(trade_filter_threshold):
                     continue
                 if exp.use_trade_filter_soft_weighting:
+                    pivot = float(trade_filter_threshold) if np.isfinite(float(trade_filter_threshold)) else 0.50
                     prob_scale = float(
                         np.clip(
-                            (prob_keep - float(trade_filter_threshold))
-                            / max(1e-6, 1.0 - float(trade_filter_threshold)),
+                            (prob_keep - pivot) / max(1e-6, 1.0 - pivot),
                             float(cfg.trade_filter_soft_scale),
                             1.0,
                         )
