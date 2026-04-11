@@ -778,8 +778,9 @@ def _fit_trade_filter_model(
         min_samples_leaf=40,
         random_state=42,
     )
-    model.fit(x[TRADE_FILTER_FEATURES], y)
-    prob = model.predict_proba(x[TRADE_FILTER_FEATURES])[:, 1]
+    feature_cols = list(TRADE_FILTER_FEATURES)
+    model.fit(x[feature_cols], y)
+    prob = model.predict_proba(x[feature_cols])[:, 1]
     q = (
         float(exp.trade_filter_prob_quantile_override)
         if exp.trade_filter_prob_quantile_override is not None
