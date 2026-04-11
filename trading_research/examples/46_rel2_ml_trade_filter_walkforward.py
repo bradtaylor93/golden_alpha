@@ -409,6 +409,7 @@ class ExperimentSpec:
     trade_filter_prob_quantile_override: float | None = None
     use_trade_filter_hard_gate: bool = True
     use_trade_filter_soft_weighting: bool = False
+    trade_filter_backfill_fraction_override: float | None = None
 
 
 EXPERIMENTS: tuple[ExperimentSpec, ...] = (
@@ -549,6 +550,58 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         use_trade_filter_model=True,
         use_trade_filter_hard_gate=False,
         use_trade_filter_soft_weighting=True,
+        trade_filter_prob_quantile_override=0.60,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_filter_q60_hybrid_backfill90",
+        use_reentry_cooldown=True,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=False,
+        use_trade_filter_soft_weighting=True,
+        trade_filter_backfill_fraction_override=0.90,
+        trade_filter_prob_quantile_override=0.60,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_filter_q60_backfill85",
+        use_reentry_cooldown=True,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.85,
+        trade_filter_prob_quantile_override=0.60,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_filter_q60_backfill90",
+        use_reentry_cooldown=True,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.90,
         trade_filter_prob_quantile_override=0.60,
     ),
 )
