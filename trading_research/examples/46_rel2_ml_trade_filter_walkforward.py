@@ -368,6 +368,9 @@ class Config:
     trade_filter_threshold_max_keep_fraction: float = 0.85
     trade_filter_threshold_min_selected: int = 40
     trade_filter_threshold_grid_size: int = 21
+    trade_filter_regime_stress_threshold_shift: float = 0.03
+    trade_filter_regime_calm_threshold_shift: float = -0.01
+    trade_filter_regime_stress_drawdown: float = -0.08
     # Universe restriction by cross-sectional cashflow proxy (21d dollar volume rank).
     cashflow_quartile_rank_threshold: float = 0.75
     cashflow_soft_rank_floor: float = 0.55
@@ -390,6 +393,16 @@ class Config:
     selection_liq_weight: float = 0.10
     selection_max_per_side: int = 14
     selection_max_daily: int = 20
+    # Dynamic side-budget controls.
+    side_budget_short_frac_calm: float = 0.35
+    side_budget_short_frac_normal: float = 0.55
+    side_budget_short_frac_stress: float = 0.85
+    side_budget_stress_drawdown: float = -0.08
+    side_budget_calm_drawdown: float = -0.03
+    # Entry no-chase controls.
+    no_chase_ret5_abs: float = 0.08
+    no_chase_px_over_ema20_abs: float = 0.10
+    no_chase_ret5_over_vol_abs: float = 2.25
     # Global risk-on gate: do not open trades unless SPY 3-month return is positive.
     require_spy_3m_positive: bool = True
 
@@ -449,6 +462,7 @@ class ExperimentSpec:
     trade_filter_backfill_fraction_override: float | None = None
     use_trade_filter_recency_weighting: bool = False
     use_trade_filter_adaptive_threshold: bool = False
+    use_regime_conditioned_ml_threshold: bool = False
     # Additional robustness variants requested by user.
     use_cashflow_quartile_restrictor: bool = False
     cashflow_quartile_threshold_override: float | None = None
@@ -475,6 +489,8 @@ class ExperimentSpec:
     selection_liq_weight_override: float | None = None
     selection_max_per_side_override: int | None = None
     selection_max_daily_override: int | None = None
+    use_dynamic_side_budget: bool = False
+    use_entry_no_chase_filter: bool = False
     max_universe_assets_override: int | None = None
 
 
@@ -1088,6 +1104,121 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         use_soft_cashflow_weighting=True,
         cashflow_soft_floor_override=0.55,
         cashflow_soft_min_scale_override=0.70,
+    ),
+    # Requested 3-pack: regime-conditioned threshold, dynamic side-budget, no-chase.
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_pack_regime_threshold",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_regime_conditioned_ml_threshold=True,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_pack_dynamic_side_budget",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_dynamic_side_budget=True,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_pack_no_chase_filter",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_entry_no_chase_filter=True,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_pack_all_three",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_regime_conditioned_ml_threshold=True,
+        use_dynamic_side_budget=True,
+        use_entry_no_chase_filter=True,
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_champion_next_expanded_assets",
@@ -1914,6 +2045,34 @@ def _build_trades(
             if (not exp.allow_shorts) and trend_sign < 0:
                 continue
             spy_up_now = float(r["spy_up"]) > 0.5
+            if exp.use_entry_no_chase_filter:
+                ret5 = float(pd.to_numeric(r.get("ret_5", 0.0), errors="coerce"))
+                px_over_ema20 = float(pd.to_numeric(r.get("px_over_ema20", 0.0), errors="coerce"))
+                vol_21 = float(pd.to_numeric(r.get("vol_21", 0.0), errors="coerce"))
+                if not np.isfinite(ret5):
+                    ret5 = 0.0
+                if not np.isfinite(px_over_ema20):
+                    px_over_ema20 = 0.0
+                vol_abs = max(1e-6, abs(vol_21)) if np.isfinite(vol_21) else 1e-6
+                ret5_over_vol = ret5 / vol_abs
+                if (
+                    (trend_sign > 0.0)
+                    and (
+                        ret5 > float(cfg.no_chase_ret5_abs)
+                        or px_over_ema20 > float(cfg.no_chase_px_over_ema20_abs)
+                        or ret5_over_vol > float(cfg.no_chase_ret5_over_vol_abs)
+                    )
+                ):
+                    continue
+                if (
+                    (trend_sign < 0.0)
+                    and (
+                        ret5 < -float(cfg.no_chase_ret5_abs)
+                        or px_over_ema20 < -float(cfg.no_chase_px_over_ema20_abs)
+                        or ret5_over_vol < -float(cfg.no_chase_ret5_over_vol_abs)
+                    )
+                ):
+                    continue
             if exp.require_spy_up_for_longs and trend_sign > 0 and not spy_up_now:
                 continue
             if exp.require_spy_down_for_shorts and trend_sign < 0 and spy_up_now:
@@ -2009,7 +2168,31 @@ def _build_trades(
                 prob_keep = float(trade_filter_model.predict_proba(feat)[0, 1])
                 if not np.isfinite(prob_keep):
                     prob_keep = 0.50
-                if exp.use_trade_filter_hard_gate and prob_keep < float(trade_filter_threshold):
+                threshold_used = float(trade_filter_threshold)
+                if exp.use_regime_conditioned_ml_threshold:
+                    spy_vol_now = float(pd.to_numeric(r.get("spy_vol_21", np.nan), errors="coerce"))
+                    spy_dd_now = float(pd.to_numeric(r.get("spy_drawdown_252", np.nan), errors="coerce"))
+                    stress_now = (not spy_up_now) or (
+                        np.isfinite(spy_vol_now)
+                        and np.isfinite(train_spy_vol_median)
+                        and spy_vol_now > train_spy_vol_median
+                    ) or (
+                        np.isfinite(spy_dd_now)
+                        and spy_dd_now <= float(cfg.trade_filter_regime_stress_drawdown)
+                    )
+                    calm_now = (
+                        spy_up_now
+                        and np.isfinite(spy_vol_now)
+                        and np.isfinite(train_spy_vol_median)
+                        and spy_vol_now < 0.80 * train_spy_vol_median
+                        and (not np.isfinite(spy_dd_now) or spy_dd_now >= float(cfg.side_budget_calm_drawdown))
+                    )
+                    if stress_now:
+                        threshold_used += float(cfg.trade_filter_regime_stress_threshold_shift)
+                    elif calm_now:
+                        threshold_used += float(cfg.trade_filter_regime_calm_threshold_shift)
+                threshold_used = float(np.clip(threshold_used, 0.05, 0.95))
+                if exp.use_trade_filter_hard_gate and prob_keep < threshold_used:
                     rejected_by_filter.append(
                         {
                             "asset": asset,
@@ -2023,7 +2206,7 @@ def _build_trades(
                     )
                     continue
                 if exp.use_trade_filter_soft_weighting:
-                    pivot = float(trade_filter_threshold) if np.isfinite(float(trade_filter_threshold)) else 0.50
+                    pivot = float(threshold_used) if np.isfinite(float(threshold_used)) else 0.50
                     prob_scale = float(
                         np.clip(
                             (prob_keep - pivot) / max(1e-6, 1.0 - pivot),
@@ -2592,6 +2775,19 @@ def _simulate_fold(
                         market_stop_breach_count = 0
                     if market_stop_active:
                         w = w * float(np.clip(stop_scale, 0.0, 1.0))
+
+            if exp.short_gross_fraction_override is not None:
+                w = _apply_short_gross_fraction(w, float(exp.short_gross_fraction_override))
+            if exp.use_dynamic_side_budget:
+                if np.isfinite(curr_spy_dd) and curr_spy_dd <= float(cfg.side_budget_stress_drawdown):
+                    short_frac = float(cfg.side_budget_short_frac_stress)
+                elif curr_spy_up and (
+                    (not np.isfinite(curr_spy_dd)) or curr_spy_dd >= float(cfg.side_budget_calm_drawdown)
+                ):
+                    short_frac = float(cfg.side_budget_short_frac_calm)
+                else:
+                    short_frac = float(cfg.side_budget_short_frac_normal)
+                w = _apply_short_gross_fraction(w, short_frac)
 
             gross = float(np.dot(w.values, rets.iloc[i].reindex(assets).fillna(0.0).values))
             turnover = float(np.abs(w - prev_w).sum())
