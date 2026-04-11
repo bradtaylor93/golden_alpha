@@ -488,6 +488,7 @@ class ExperimentSpec:
     trade_filter_prob_quantile_override: float | None = None
     use_trade_filter_hard_gate: bool = True
     use_trade_filter_soft_weighting: bool = False
+    trade_filter_soft_scale_override: float | None = None
     trade_filter_backfill_fraction_override: float | None = None
     use_trade_filter_recency_weighting: bool = False
     use_trade_filter_adaptive_threshold: bool = False
@@ -1186,6 +1187,47 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         use_trade_filter_soft_weighting=True,
         trade_filter_backfill_fraction_override=0.82,
         trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_bear_short_sleeve=True,
+        sleeve_bear_short_spy_dd_threshold_override=-0.06,
+        sleeve_bear_short_vol_mult_override=0.95,
+        sleeve_bear_short_rel_quantile_override=0.25,
+        sleeve_bear_short_max_names_override=22,
+        sleeve_bear_short_gross_override=0.65,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_2x_recovery_soft_prob_hybrid_ev",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=2.0,
+        max_abs_weight_per_asset_override=0.11,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        use_trade_filter_soft_weighting=True,
+        trade_filter_soft_scale_override=0.20,
+        trade_filter_backfill_fraction_override=0.70,
+        trade_filter_prob_quantile_override=0.55,
+        use_selection_optimizer=True,
+        selection_prob_weight_override=0.75,
+        selection_edge_weight_override=0.20,
+        selection_liq_weight_override=0.05,
+        selection_max_per_side_override=12,
+        selection_max_daily_override=16,
         use_market_stop_loss=True,
         use_soft_cashflow_weighting=True,
         cashflow_soft_floor_override=0.55,
@@ -2812,10 +2854,15 @@ def _build_trades(
                     continue
                 if exp.use_trade_filter_soft_weighting:
                     pivot = float(threshold_used) if np.isfinite(float(threshold_used)) else 0.50
+                    soft_scale_floor = (
+                        float(exp.trade_filter_soft_scale_override)
+                        if exp.trade_filter_soft_scale_override is not None
+                        else float(cfg.trade_filter_soft_scale)
+                    )
                     prob_scale = float(
                         np.clip(
                             (prob_keep - pivot) / max(1e-6, 1.0 - pivot),
-                            float(cfg.trade_filter_soft_scale),
+                            soft_scale_floor,
                             1.0,
                         )
                     )
