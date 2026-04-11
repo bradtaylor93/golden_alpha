@@ -386,24 +386,16 @@ class ExperimentSpec:
     hard_stop_loss_pct_override: float | None = None
     use_asset_efficacy_filter: bool = False
     asset_efficacy_quantile_override: float | None = None
-    use_confidence_calibrated_sizing: bool = False
+    # Four-step Sharpe improvement pack.
+    use_confidence_calibration: bool = False
     use_corr_aware_gross_scaler: bool = False
+    use_asymmetric_short_filter: bool = False
+    short_gross_fraction_override: float | None = None
     short_rel_strength_threshold_override: float | None = None
     short_top_quantile_override: float | None = None
     use_profit_lock_exit: bool = False
     profit_lock_threshold_override: float | None = None
     profit_lock_trail_override: float | None = None
-    # Sharpe brainstorming pack toggles.
-    use_calibrated_confidence_sizing: bool = False
-    use_corr_aware_gross_scaler: bool = False
-    use_profit_lock_exit: bool = False
-    short_top_quantile_override: float | None = None
-    short_rel_strength_threshold_override: float | None = None
-    # Brainstorm ablation add-ons.
-    use_calibrated_confidence: bool = False
-    use_corr_aware_gross: bool = False
-    use_asymmetric_short_filter: bool = False
-    use_profit_lock_exit: bool = False
 
 
 EXPERIMENTS: tuple[ExperimentSpec, ...] = (
@@ -866,6 +858,8 @@ def _build_trades(
     train_spy_vol_median: float,
     asset_efficacy_map: dict[str, float] | None = None,
     asset_efficacy_threshold: float | None = None,
+    conf_cal_slope: float = 0.0,
+    conf_cal_intercept: float = 0.0,
 ) -> pd.DataFrame:
     close_wide = test_panel.pivot(index="timestamp", columns="asset", values="close").sort_index().ffill()
     all_dates = close_wide.index.to_list()
@@ -917,13 +911,41 @@ def _build_trades(
                 continue
             if exp.require_spy_down_for_shorts and trend_sign < 0 and spy_up_now:
                 continue
+            if exp.use_asymmetric_short_filter and trend_sign < 0:
+                short_top_q = (
+                    float(exp.short_top_quantile_override)
+                    if exp.short_top_quantile_override is not None
+                    else min(0.995, top_q + cfg.short_rank_buffer)
+                )
+                short_rel_th = (
+                    float(exp.short_rel_strength_threshold_override)
+                    if exp.short_rel_strength_threshold_override is not None
+                    else rel_thresh + cfg.short_rel_strength_buffer
+                )
+                if rank < short_top_q or rel < short_rel_th:
+                    continue
             if sig_idx <= int(last_end_by_asset.get(asset, -1)):
                 continue
             if exp.use_reentry_cooldown and sig_idx <= int(cooldown_until_by_asset.get(asset, -1)):
                 continue
-            rank_conf = float(np.clip((rank - top_q) / max(1e-6, 1.0 - top_q), 0.0, 1.0))
-            rel_conf = float(np.clip((rel - rel_thresh) / 0.05, 0.0, 1.0))
-            conf = float(0.5 + 1.5 * (0.5 * rank_conf + 0.5 * rel_conf))
+            if exp.use_confidence_calibration:
+                rank_conf = float(np.clip((rank - top_q) / max(1e-6, 1.0 - top_q), 0.0, 1.0))
+                rel_conf = float(np.clip((rel - rel_thresh) / 0.05, 0.0, 1.0))
+                vol = float(r["vol_21"])
+                vol_norm = float(np.clip((vol / max(1e-6, train_spy_vol_median)) - 1.0, 0.0, 2.0))
+                base_signal = (
+                    cfg.confidence_calib_rel_weight * rel_conf
+                    + cfg.confidence_calib_rank_weight * rank_conf
+                    - cfg.confidence_calib_vol_penalty * vol_norm
+                )
+                conf = float(np.clip(cfg.confidence_calib_base + cfg.confidence_calib_scale * base_signal, 0.25, 3.0))
+                # Fold-local calibration learned on train fold only.
+                edge_hat = float(conf_cal_slope * conf + conf_cal_intercept)
+                conf = float(np.clip(conf * (1.0 + float(np.clip(edge_hat / 0.005, -0.4, 0.6))), 0.25, 3.0))
+            else:
+                rank_conf = float(np.clip((rank - top_q) / max(1e-6, 1.0 - top_q), 0.0, 1.0))
+                rel_conf = float(np.clip((rel - rel_thresh) / 0.05, 0.0, 1.0))
+                conf = float(0.5 + 1.5 * (0.5 * rank_conf + 0.5 * rel_conf))
             strength = float(max(1e-6, rank - top_q))
             edge_proxy = strength * conf
             if exp.use_regime_buffer or exp.use_dynamic_edge_floor:
@@ -985,11 +1007,22 @@ def _build_trades(
             exit_idx = hard_end
             exit_reason = "fixed_hold"
             peak_signed = 0.0
+            lock_active = False
             bear_trail = cfg.bear_trailing_stop_pct
             hard_stop_loss_local = (
                 float(exp.hard_stop_loss_pct_override)
                 if exp.hard_stop_loss_pct_override is not None
                 else float(cfg.hard_stop_loss_pct)
+            )
+            profit_lock_trigger = (
+                float(exp.profit_lock_threshold_override)
+                if exp.profit_lock_threshold_override is not None
+                else float(cfg.profit_lock_trigger)
+            )
+            profit_lock_trail = (
+                float(exp.profit_lock_trail_override)
+                if exp.profit_lock_trail_override is not None
+                else float(cfg.profit_lock_trail)
             )
             if exp.use_vol_norm_trail and not spy_up:
                 ent_vol = float(r["vol_21"])
@@ -1003,9 +1036,15 @@ def _build_trades(
                     continue
                 signed_ret = trend_sign * (px / entry_px - 1.0)
                 peak_signed = max(peak_signed, signed_ret)
+                if exp.use_profit_lock_exit and (not lock_active) and peak_signed >= profit_lock_trigger:
+                    lock_active = True
                 if exp.use_hard_stop_loss and signed_ret <= -hard_stop_loss_local:
                     exit_idx = j
                     exit_reason = "hard_stop_loss"
+                    break
+                if lock_active and (peak_signed - signed_ret) >= profit_lock_trail:
+                    exit_idx = j
+                    exit_reason = "profit_lock_trail"
                     break
                 if (not spy_up) and bear_trail is not None and (peak_signed - signed_ret) >= float(bear_trail):
                     exit_idx = j
@@ -1146,6 +1185,23 @@ def _weights_from_active(
     return w
 
 
+def _apply_short_budget(weights: pd.Series, short_fraction: float) -> pd.Series:
+    """Shrink short book to target gross fraction of long book."""
+    out = weights.copy()
+    if out.empty:
+        return out
+    sf = float(np.clip(short_fraction, 0.0, 1.0))
+    long_gross = float(out[out > 0.0].sum())
+    short_gross = float(np.abs(out[out < 0.0].sum()))
+    if long_gross <= 1e-12 or short_gross <= 1e-12:
+        return out
+    max_short = sf * long_gross
+    if short_gross > max_short and max_short >= 0.0:
+        scale = max_short / short_gross if short_gross > 1e-12 else 1.0
+        out.loc[out < 0.0] = out.loc[out < 0.0] * scale
+    return out
+
+
 def _cross_sectional_abs_corr(active: pd.DataFrame, returns_frame: pd.DataFrame, idx: int, lookback: int) -> float:
     if active.empty or idx <= 1 or returns_frame.empty:
         return 0.0
@@ -1163,6 +1219,25 @@ def _cross_sectional_abs_corr(active: pd.DataFrame, returns_frame: pd.DataFrame,
     vals = np.abs(corr[tri])
     vals = vals[np.isfinite(vals)]
     return float(np.mean(vals)) if vals.size > 0 else 0.0
+
+
+def _apply_short_gross_fraction(weights: pd.Series, short_fraction: float) -> pd.Series:
+    out = weights.copy()
+    sf = float(np.clip(short_fraction, 0.0, 1.0))
+    if out.empty:
+        return out
+    long_mask = out > 0.0
+    short_mask = out < 0.0
+    long_gross = float(out[long_mask].sum())
+    short_gross = float(np.abs(out[short_mask]).sum())
+    if short_gross <= 1e-12:
+        return out
+    max_short = sf * long_gross if long_gross > 1e-12 else 0.0
+    if short_gross <= max_short + 1e-12:
+        return out
+    scale = max_short / short_gross if short_gross > 0.0 else 0.0
+    out.loc[short_mask] = out.loc[short_mask] * scale
+    return out
 
 
 def _simulate_fold(
