@@ -63,3 +63,51 @@ bars = vendor.fetch_bars(
 ```bash
 PYTHONPATH=/workspace python3 -m streamlit run trading_research/apps/quant_dashboard.py
 ```
+
+## Live trading (Alpaca)
+
+This repo now includes a production-oriented live runner for the current
+`smart_breadth_quality_3x` logic with Alpaca.
+
+Files:
+
+- Broker adapter: `trading_research/live/alpaca.py`
+- Strategy signal/weights: `trading_research/live/smart_breadth_live.py`
+- Executable runner: `trading_research/examples/45_live_smart_breadth_alpaca.py`
+
+Environment variables:
+
+- `ALPACA_API_KEY_ID` (required for broker connectivity)
+- `ALPACA_API_SECRET_KEY` (required for broker connectivity)
+- `ALPACA_BASE_URL` (optional; defaults to paper endpoint)
+
+Install dependency:
+
+```bash
+python3 -m pip install requests
+```
+
+Dry-run (recommended first, no orders):
+
+```bash
+PYTHONPATH=/workspace python3 trading_research/examples/45_live_smart_breadth_alpaca.py --mode dry-run
+```
+
+Apply orders in Alpaca paper account:
+
+```bash
+PYTHONPATH=/workspace python3 trading_research/examples/45_live_smart_breadth_alpaca.py --mode apply --paper
+```
+
+Run in live brokerage account (dangerous):
+
+```bash
+PYTHONPATH=/workspace python3 trading_research/examples/45_live_smart_breadth_alpaca.py --mode apply
+```
+
+Notes:
+
+- The runner computes targets from the same universe and portfolio logic,
+  then submits delta notional orders.
+- It includes safety checks for max notional and order minimums.
+- Keep paper mode until you confirm behavior and broker fills.
