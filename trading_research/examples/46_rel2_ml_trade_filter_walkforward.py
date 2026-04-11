@@ -1059,12 +1059,56 @@ def _build_panel(bars: pd.DataFrame, spy: pd.DataFrame, cfg: Config) -> pd.DataF
     look = cfg.signal_lookback_days
     frame["past_return"] = g["close"].pct_change(look)
     frame["ret_1d"] = g["close"].pct_change()
+    frame["ret_5"] = g["close"].pct_change(5)
+    frame["ret_21"] = g["close"].pct_change(21)
+    frame["vol_5"] = (
+        g["ret_1d"]
+        .rolling(5, min_periods=5)
+        .std()
+        .reset_index(level=0, drop=True)
+    )
     frame["vol_21"] = (
         g["ret_1d"]
         .rolling(cfg.vol_window_days, min_periods=cfg.vol_window_days)
         .std()
         .reset_index(level=0, drop=True)
     )
+    frame["vol_ratio_5_21"] = frame["vol_5"] / frame["vol_21"].replace(0.0, np.nan)
+    frame["downside_ret_1d"] = frame["ret_1d"].clip(upper=0.0)
+    frame["upside_ret_1d"] = frame["ret_1d"].clip(lower=0.0)
+    frame["downside_vol_21"] = (
+        frame["downside_ret_1d"]
+        .groupby(frame["asset"], sort=False)
+        .rolling(cfg.vol_window_days, min_periods=cfg.vol_window_days)
+        .std()
+        .reset_index(level=0, drop=True)
+    )
+    frame["upside_vol_21"] = (
+        frame["upside_ret_1d"]
+        .groupby(frame["asset"], sort=False)
+        .rolling(cfg.vol_window_days, min_periods=cfg.vol_window_days)
+        .std()
+        .reset_index(level=0, drop=True)
+    )
+    roll_hi_63 = (
+        g["close"]
+        .rolling(63, min_periods=21)
+        .max()
+        .reset_index(level=0, drop=True)
+    )
+    roll_lo_63 = (
+        g["close"]
+        .rolling(63, min_periods=21)
+        .min()
+        .reset_index(level=0, drop=True)
+    )
+    frame["px_to_hi_63"] = frame["close"] / roll_hi_63.replace(0.0, np.nan) - 1.0
+    frame["px_to_lo_63"] = frame["close"] / roll_lo_63.replace(0.0, np.nan) - 1.0
+    frame["range_pos_63"] = (frame["close"] - roll_lo_63) / (roll_hi_63 - roll_lo_63).replace(0.0, np.nan)
+    frame["ema_20"] = g["close"].transform(lambda s: s.ewm(span=20, adjust=False, min_periods=20).mean())
+    frame["ema_50"] = g["close"].transform(lambda s: s.ewm(span=50, adjust=False, min_periods=50).mean())
+    frame["px_over_ema20"] = frame["close"] / frame["ema_20"].replace(0.0, np.nan) - 1.0
+    frame["ema20_over_ema50"] = frame["ema_20"] / frame["ema_50"].replace(0.0, np.nan) - 1.0
     frame["dollar_vol"] = frame["close"] * frame["volume"].fillna(0.0)
     frame["dollar_vol_21"] = (
         g["dollar_vol"]
@@ -1076,25 +1120,44 @@ def _build_panel(bars: pd.DataFrame, spy: pd.DataFrame, cfg: Config) -> pd.DataF
 
     frame["score"] = np.sign(frame["past_return"]) * (frame["close"] / frame["rolling_vwap"] - 1.0)
     frame["rank_pct"] = frame.groupby("timestamp")["score"].rank(pct=True, method="average")
+    frame["score_pos"] = (frame["score"] > 0.0).astype(float)
+    frame["breadth_pos_score"] = frame.groupby("timestamp")["score_pos"].transform("mean")
 
     spy = spy.copy()
     spy["timestamp"] = pd.to_datetime(spy["timestamp"], utc=True, errors="coerce")
     spy = spy.dropna(subset=["timestamp", "close"]).sort_values("timestamp")
     spy["close"] = pd.to_numeric(spy["close"], errors="coerce")
     spy = spy.dropna(subset=["close"]).copy()
+    spy["spy_ret_21"] = spy["close"] / spy["close"].shift(21) - 1.0
     spy["spy_ret_63"] = spy["close"] / spy["close"].shift(look) - 1.0
     spy["spy_ret_126"] = spy["close"] / spy["close"].shift(63) - 1.0
     spy["spy_3m_positive"] = (spy["spy_ret_126"] > 0.0).astype(float)
     spy["spy_ma200"] = spy["close"].rolling(200, min_periods=200).mean()
     spy["spy_up"] = (spy["close"] > spy["spy_ma200"]).astype(float)
     spy["spy_vol_21"] = spy["close"].pct_change().rolling(cfg.vol_window_days, min_periods=cfg.vol_window_days).std()
+    spy["spy_drawdown_252"] = spy["close"] / spy["close"].rolling(252, min_periods=63).max() - 1.0
+    spy["spy_trend_gap"] = spy["close"] / spy["spy_ma200"].replace(0.0, np.nan) - 1.0
     spy = spy.rename(columns={"close": "spy_close"})
     frame = frame.merge(
-        spy[["timestamp", "spy_close", "spy_ret_63", "spy_ret_126", "spy_3m_positive", "spy_up", "spy_vol_21"]],
+        spy[
+            [
+                "timestamp",
+                "spy_close",
+                "spy_ret_21",
+                "spy_ret_63",
+                "spy_ret_126",
+                "spy_3m_positive",
+                "spy_up",
+                "spy_vol_21",
+                "spy_drawdown_252",
+                "spy_trend_gap",
+            ]
+        ],
         on="timestamp",
         how="left",
     )
     frame["rel_strength_63"] = frame["past_return"] - frame["spy_ret_63"]
+    frame["rel_strength_21"] = frame["ret_21"] - frame["spy_ret_21"]
 
     frame = frame.replace([np.inf, -np.inf], np.nan).dropna(
         subset=[
@@ -1242,6 +1305,25 @@ TRADE_FILTER_FEATURES: tuple[str, ...] = (
     "rank_x_score",
     "sign_x_score",
     "sign_x_rel",
+    # richer trend/path/asymmetry/market-state signals
+    "ret_5",
+    "ret_21",
+    "ret_5_over_vol",
+    "ret_21_over_vol",
+    "vol_5",
+    "vol_ratio_5_21",
+    "downside_vol_21",
+    "downside_upside_ratio",
+    "px_to_hi_63",
+    "px_to_lo_63",
+    "range_pos_63",
+    "px_over_ema20",
+    "ema20_over_ema50",
+    "breadth_pos_score",
+    "spy_ret_21",
+    "spy_drawdown_252",
+    "spy_trend_gap",
+    "rel_strength_21",
 )
 
 
@@ -1253,22 +1335,45 @@ def _trade_feature_row(
     conf: float,
     edge_proxy: float,
 ) -> dict[str, float]:
-    score = float(row["score"])
-    rel = float(row["rel_strength_63"])
-    past = float(row["past_return"])
-    vol = float(row["vol_21"])
-    adv = float(row["adv_rank_pct"])
-    spy_vol = float(row["spy_vol_21"])
+    def _safe(v: object, default: float = 0.0) -> float:
+        try:
+            x = float(v)
+        except Exception:
+            return default
+        return x if np.isfinite(x) else default
+
+    score = _safe(row.get("score", 0.0))
+    rel = _safe(row.get("rel_strength_63", 0.0))
+    past = _safe(row.get("past_return", 0.0))
+    vol = _safe(row.get("vol_21", 0.0))
+    adv = _safe(row.get("adv_rank_pct", 0.0))
+    spy_vol = _safe(row.get("spy_vol_21", 0.0))
+    ret_5 = _safe(row.get("ret_5", 0.0))
+    ret_21 = _safe(row.get("ret_21", 0.0))
+    vol_5 = _safe(row.get("vol_5", 0.0))
+    vol_ratio_5_21 = _safe(row.get("vol_ratio_5_21", 0.0))
+    downside_vol_21 = _safe(row.get("downside_vol_21", 0.0))
+    upside_vol_21 = max(1e-6, _safe(row.get("upside_vol_21", 0.0)))
+    px_to_hi_63 = _safe(row.get("px_to_hi_63", 0.0))
+    px_to_lo_63 = _safe(row.get("px_to_lo_63", 0.0))
+    range_pos_63 = float(np.clip(_safe(row.get("range_pos_63", 0.5), 0.5), 0.0, 1.0))
+    px_over_ema20 = _safe(row.get("px_over_ema20", 0.0))
+    ema20_over_ema50 = _safe(row.get("ema20_over_ema50", 0.0))
+    breadth_pos_score = float(np.clip(_safe(row.get("breadth_pos_score", 0.5), 0.5), 0.0, 1.0))
+    spy_ret_21 = _safe(row.get("spy_ret_21", 0.0))
+    spy_drawdown_252 = _safe(row.get("spy_drawdown_252", 0.0))
+    spy_trend_gap = _safe(row.get("spy_trend_gap", 0.0))
+    rel_strength_21 = _safe(row.get("rel_strength_21", 0.0))
     vol_safe = max(1e-6, abs(vol))
     spy_vol_safe = max(1e-6, abs(spy_vol))
     return {
-        "rank_pct": float(row["rank_pct"]),
+        "rank_pct": _safe(row.get("rank_pct", 0.0)),
         "rel_strength_63": rel,
         "score": score,
         "past_return": past,
         "vol_21": vol,
         "adv_rank_pct": adv,
-        "spy_up": float(row["spy_up"]),
+        "spy_up": _safe(row.get("spy_up", 0.0)),
         "spy_vol_21": spy_vol,
         "signal_strength": float(strength),
         "confidence_score": float(conf),
@@ -1281,19 +1386,37 @@ def _trade_feature_row(
         "rel_over_spy_vol": float(rel / spy_vol_safe),
         "vol_vs_spy_vol": float(vol / spy_vol_safe),
         "edge_over_vol": float(edge_proxy / vol_safe),
-        "conf_x_rank": float(conf * float(row["rank_pct"])),
+        "conf_x_rank": float(conf * _safe(row.get("rank_pct", 0.0))),
         "conf_x_rel": float(conf * rel),
-        "rank_x_rel": float(float(row["rank_pct"]) * rel),
+        "rank_x_rel": float(_safe(row.get("rank_pct", 0.0)) * rel),
         "score_sq": float(score * score),
         "rel_sq": float(rel * rel),
-        "spy_ret_63": float(row["spy_ret_63"]),
-        "spy_ret_126": float(row["spy_ret_126"]),
+        "spy_ret_63": _safe(row.get("spy_ret_63", 0.0)),
+        "spy_ret_126": _safe(row.get("spy_ret_126", 0.0)),
         "liquidity_edge": float((1.0 - np.clip(adv, 0.0, 1.0)) * edge_proxy),
-        "rank_minus_adv": float(float(row["rank_pct"]) - adv),
+        "rank_minus_adv": float(_safe(row.get("rank_pct", 0.0)) - adv),
         "rel_minus_score": float(rel - score),
-        "rank_x_score": float(float(row["rank_pct"]) * score),
+        "rank_x_score": float(_safe(row.get("rank_pct", 0.0)) * score),
         "sign_x_score": float(trend_sign * score),
         "sign_x_rel": float(trend_sign * rel),
+        "ret_5": ret_5,
+        "ret_21": ret_21,
+        "ret_5_over_vol": float(ret_5 / vol_safe),
+        "ret_21_over_vol": float(ret_21 / vol_safe),
+        "vol_5": vol_5,
+        "vol_ratio_5_21": vol_ratio_5_21,
+        "downside_vol_21": downside_vol_21,
+        "downside_upside_ratio": float(downside_vol_21 / upside_vol_21),
+        "px_to_hi_63": px_to_hi_63,
+        "px_to_lo_63": px_to_lo_63,
+        "range_pos_63": range_pos_63,
+        "px_over_ema20": px_over_ema20,
+        "ema20_over_ema50": ema20_over_ema50,
+        "breadth_pos_score": breadth_pos_score,
+        "spy_ret_21": spy_ret_21,
+        "spy_drawdown_252": spy_drawdown_252,
+        "spy_trend_gap": spy_trend_gap,
+        "rel_strength_21": rel_strength_21,
     }
 
 
