@@ -403,6 +403,21 @@ class Config:
     no_chase_ret5_abs: float = 0.08
     no_chase_px_over_ema20_abs: float = 0.10
     no_chase_ret5_over_vol_abs: float = 2.25
+    # Exit-pack controls.
+    exit_meta_hold_short_days: int = 42
+    exit_meta_hold_mid_days: int = 70
+    exit_meta_hold_long_days: int = 98
+    exit_dynamic_lock_conf_cut: float = 1.35
+    exit_dynamic_lock_trig_high_conf: float = 0.12
+    exit_dynamic_lock_trig_low_conf: float = 0.08
+    exit_dynamic_lock_trail_high_conf: float = 0.08
+    exit_dynamic_lock_trail_low_conf: float = 0.05
+    exit_dynamic_lock_stress_drawdown: float = -0.08
+    exit_dynamic_lock_stress_trigger_bump: float = 0.02
+    exit_dynamic_lock_stress_trail_tighten: float = 0.01
+    exit_time_stop_min_days: int = 12
+    exit_time_stop_max_days: int = 84
+    exit_time_stop_no_progress_bps: float = 0.005
     # Global risk-on gate: do not open trades unless SPY 3-month return is positive.
     require_spy_3m_positive: bool = True
 
@@ -491,6 +506,13 @@ class ExperimentSpec:
     selection_max_daily_override: int | None = None
     use_dynamic_side_budget: bool = False
     use_entry_no_chase_filter: bool = False
+    use_meta_exit_hold_bucket: bool = False
+    meta_exit_short_days_override: int | None = None
+    meta_exit_long_days_override: int | None = None
+    use_dynamic_profit_lock: bool = False
+    use_vol_time_stop: bool = False
+    vol_time_stop_min_days_override: int | None = None
+    vol_time_stop_max_days_override: int | None = None
     max_universe_assets_override: int | None = None
 
 
@@ -1220,6 +1242,121 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         use_dynamic_side_budget=True,
         use_entry_no_chase_filter=True,
     ),
+    # Exit-intelligence pack.
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_exit_meta_hold",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_meta_exit_hold_bucket=True,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_exit_dynamic_profit_lock",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_dynamic_profit_lock=True,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_exit_vol_time_stop",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_vol_time_stop=True,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_exit_combo",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_meta_exit_hold_bucket=True,
+        use_dynamic_profit_lock=True,
+        use_vol_time_stop=True,
+    ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_champion_next_expanded_assets",
         use_reentry_cooldown=False,
@@ -1766,6 +1903,45 @@ def _trade_feature_row(
         "spy_trend_gap": spy_trend_gap,
         "rel_strength_21": rel_strength_21,
     }
+
+
+def _predict_hold_days(
+    *,
+    row: pd.Series,
+    trend_sign: float,
+    cfg: Config,
+    exp: ExperimentSpec,
+    bull_default: int,
+    bear_default: int,
+) -> int:
+    """Simple deterministic hold-bucket model using entry context only."""
+    short_days = (
+        int(exp.meta_exit_short_days_override)
+        if exp.meta_exit_short_days_override is not None
+        else int(max(5, round(0.45 * bear_default)))
+    )
+    long_days = (
+        int(exp.meta_exit_long_days_override)
+        if exp.meta_exit_long_days_override is not None
+        else int(max(bull_default + 10, round(1.20 * bull_default)))
+    )
+    base_days = bull_default if trend_sign > 0.0 else bear_default
+    score = float(pd.to_numeric(row.get("score", 0.0), errors="coerce"))
+    rel = float(pd.to_numeric(row.get("rel_strength_63", 0.0), errors="coerce"))
+    spy_up = bool(float(pd.to_numeric(row.get("spy_up", 0.0), errors="coerce")) > 0.5)
+    spy_dd = float(pd.to_numeric(row.get("spy_drawdown_252", 0.0), errors="coerce"))
+    vol_21 = float(pd.to_numeric(row.get("vol_21", 0.0), errors="coerce"))
+    spy_vol = float(pd.to_numeric(row.get("spy_vol_21", 0.0), errors="coerce"))
+    vol_ratio = abs(vol_21) / max(1e-6, abs(spy_vol)) if np.isfinite(vol_21) and np.isfinite(spy_vol) else 1.0
+    edge = trend_sign * score + rel
+    stress = (not spy_up) or (np.isfinite(spy_dd) and spy_dd <= -0.08) or (vol_ratio > 1.25)
+    if stress:
+        return max(3, min(short_days, base_days))
+    if edge >= 0.045:
+        return max(base_days, long_days)
+    if edge <= 0.015:
+        return max(3, min(short_days, base_days))
+    return max(3, base_days)
 
 
 def _select_trade_filter_threshold(
@@ -2323,6 +2499,16 @@ def _build_trades(
             start_idx = sig_idx + 1
             spy_up = float(r["spy_up"]) > 0.5
             hold_days = cfg.bull_hold_days if spy_up else cfg.bear_hold_days
+            if exp.use_meta_exit_hold_bucket:
+                hold_days = _predict_hold_days(
+                    row=r,
+                    trend_sign=trend_sign,
+                    cfg=cfg,
+                    exp=exp,
+                    bull_default=int(cfg.bull_hold_days),
+                    bear_default=int(cfg.bear_hold_days),
+                )
+            hold_days = int(max(3, hold_days))
             hard_end = min(sig_idx + hold_days, n_dates - 1)
             if start_idx >= n_dates or hard_end <= start_idx:
                 continue
@@ -2352,6 +2538,34 @@ def _build_trades(
                 if exp.profit_lock_trail_override is not None
                 else float(cfg.profit_lock_trail)
             )
+            if exp.use_dynamic_profit_lock:
+                conf_cut = float(cfg.exit_dynamic_lock_conf_cut)
+                high_conf = float(c["confidence"]) >= conf_cut
+                if high_conf:
+                    profit_lock_trigger = float(cfg.exit_dynamic_lock_trig_high_conf)
+                    profit_lock_trail = float(cfg.exit_dynamic_lock_trail_high_conf)
+                else:
+                    profit_lock_trigger = float(cfg.exit_dynamic_lock_trig_low_conf)
+                    profit_lock_trail = float(cfg.exit_dynamic_lock_trail_low_conf)
+                if not spy_up:
+                    # Tighten lock in stressed tape to reduce giveback.
+                    profit_lock_trigger *= 0.95
+                    profit_lock_trail *= 0.90
+
+            vol_time_stop_min_days = (
+                int(exp.vol_time_stop_min_days_override)
+                if exp.vol_time_stop_min_days_override is not None
+                else int(cfg.exit_time_stop_min_days)
+            )
+            vol_time_stop_max_days = (
+                int(exp.vol_time_stop_max_days_override)
+                if exp.vol_time_stop_max_days_override is not None
+                else int(hold_days)
+            )
+            vol_time_stop_min_days = max(3, vol_time_stop_min_days)
+            vol_time_stop_max_days = max(vol_time_stop_min_days, vol_time_stop_max_days)
+            if exp.use_vol_time_stop:
+                hard_end = min(hard_end, start_idx + vol_time_stop_max_days)
             if exp.use_vol_norm_trail and not spy_up:
                 ent_vol = float(r["vol_21"])
                 if np.isfinite(ent_vol):
@@ -2364,7 +2578,7 @@ def _build_trades(
                     continue
                 signed_ret = trend_sign * (px / entry_px - 1.0)
                 peak_signed = max(peak_signed, signed_ret)
-                if exp.use_profit_lock_exit and (not lock_active) and peak_signed >= profit_lock_trigger:
+                if (exp.use_profit_lock_exit or exp.use_dynamic_profit_lock) and (not lock_active) and peak_signed >= profit_lock_trigger:
                     lock_active = True
                 if exp.use_hard_stop_loss and signed_ret <= -hard_stop_loss_local:
                     exit_idx = j
@@ -2374,6 +2588,17 @@ def _build_trades(
                     exit_idx = j
                     exit_reason = "profit_lock_trail"
                     break
+                held_days = int(j - start_idx + 1)
+                if exp.use_vol_time_stop and held_days >= vol_time_stop_min_days:
+                    no_prog = float(cfg.exit_time_stop_no_progress_bps)
+                    entry_vol = float(pd.to_numeric(r.get("vol_21", 0.0), errors="coerce"))
+                    spy_vol_now = float(pd.to_numeric(r.get("spy_vol_21", 0.0), errors="coerce"))
+                    vol_ratio = abs(entry_vol) / max(1e-6, abs(spy_vol_now)) if np.isfinite(entry_vol) and np.isfinite(spy_vol_now) else 1.0
+                    req_progress = no_prog * float(np.clip(vol_ratio, 0.75, 2.0))
+                    if peak_signed < req_progress and signed_ret <= req_progress:
+                        exit_idx = j
+                        exit_reason = "vol_time_stop_no_progress"
+                        break
                 if (not spy_up) and bear_trail is not None and (peak_signed - signed_ret) >= float(bear_trail):
                     exit_idx = j
                     exit_reason = "bear_trailing_dynamic" if exp.use_vol_norm_trail else "bear_trailing_10"
