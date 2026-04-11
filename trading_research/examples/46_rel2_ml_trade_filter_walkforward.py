@@ -418,6 +418,20 @@ class Config:
     exit_time_stop_min_days: int = 12
     exit_time_stop_max_days: int = 84
     exit_time_stop_no_progress_bps: float = 0.005
+    # Orthogonal sleeves (bear short + choppy volatility).
+    sleeve_bear_short_spy_dd_threshold: float = -0.08
+    sleeve_bear_short_vol_mult: float = 1.05
+    sleeve_bear_short_rel_quantile: float = 0.20
+    sleeve_bear_short_max_names: int = 18
+    sleeve_bear_short_gross: float = 0.55
+    sleeve_bear_short_score_weight: float = 0.35
+    sleeve_choppy_vol_mult: float = 1.10
+    sleeve_choppy_trend_gap_abs_max: float = 0.03
+    sleeve_choppy_min_drawdown: float = -0.12
+    sleeve_choppy_revert_z: float = 1.0
+    sleeve_choppy_max_names_per_side: int = 10
+    sleeve_choppy_gross: float = 0.45
+    sleeve_choppy_px_ema_gate: float = 0.12
     # Global risk-on gate: do not open trades unless SPY 3-month return is positive.
     require_spy_3m_positive: bool = True
 
@@ -506,6 +520,8 @@ class ExperimentSpec:
     selection_max_daily_override: int | None = None
     use_dynamic_side_budget: bool = False
     use_entry_no_chase_filter: bool = False
+    use_bear_short_sleeve: bool = False
+    use_choppy_vol_sleeve: bool = False
     use_meta_exit_hold_bucket: bool = False
     meta_exit_short_days_override: int | None = None
     meta_exit_long_days_override: int | None = None
@@ -773,6 +789,91 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         market_stop_stage1_scale_override=0.50,
         market_stop_stage2_scale_override=0.20,
         market_stop_state_recovery_override=0.04,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_2x_ml_champion_sleeve_bear_short",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=2.0,
+        max_abs_weight_per_asset_override=0.10,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_bear_short_sleeve=True,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_2x_ml_champion_sleeve_choppy_vol",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=2.0,
+        max_abs_weight_per_asset_override=0.10,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_choppy_vol_sleeve=True,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_2x_ml_champion_sleeve_dual",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=2.0,
+        max_abs_weight_per_asset_override=0.10,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_bear_short_sleeve=True,
+        use_choppy_vol_sleeve=True,
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_champion_v3_softw",
@@ -2794,6 +2895,120 @@ def _apply_short_gross_fraction(weights: pd.Series, short_fraction: float) -> pd
     return out
 
 
+def _orthogonal_sleeve_overlay(
+    *,
+    day_panel: pd.DataFrame,
+    assets: list[str],
+    cfg: Config,
+    exp: ExperimentSpec,
+    gross_target: float,
+    max_abs_weight: float,
+    curr_spy_up: bool,
+    curr_spy_vol: float,
+    curr_spy_dd: float,
+    train_spy_vol_median: float,
+    spy_trend_gap: float,
+) -> pd.Series:
+    out = pd.Series(0.0, index=assets, dtype=float)
+    if day_panel.empty or (not exp.use_bear_short_sleeve and not exp.use_choppy_vol_sleeve):
+        return out
+
+    p = day_panel.copy()
+    p["asset"] = p["asset"].astype(str)
+    p = p[p["asset"].isin(assets)].copy()
+    if p.empty:
+        return out
+    for c in ["rel_strength_63", "score", "px_over_ema20", "ema20_over_ema50", "adv_rank_pct", "ret_5", "vol_21"]:
+        if c in p.columns:
+            p[c] = pd.to_numeric(p[c], errors="coerce")
+        else:
+            p[c] = float("nan")
+    p = p.replace([np.inf, -np.inf], np.nan)
+
+    # Sleeve 1: bear-market short overlay for orthogonal downside capture.
+    if exp.use_bear_short_sleeve:
+        bear_regime = (
+            (not curr_spy_up)
+            and np.isfinite(curr_spy_dd)
+            and curr_spy_dd <= float(cfg.sleeve_bear_short_spy_dd_threshold)
+            and np.isfinite(curr_spy_vol)
+            and np.isfinite(train_spy_vol_median)
+            and curr_spy_vol >= float(cfg.sleeve_bear_short_vol_mult) * train_spy_vol_median
+        )
+        if bear_regime:
+            bear = p[
+                (p["adv_rank_pct"] >= float(cfg.smart_liquidity_min_rank_pct))
+                & (p["px_over_ema20"] <= 0.0)
+                & (p["ema20_over_ema50"] <= 0.0)
+            ].copy()
+            if not bear.empty:
+                rel_q = float(np.clip(cfg.sleeve_bear_short_rel_quantile, 0.01, 0.80))
+                rel_cut = float(bear["rel_strength_63"].quantile(rel_q))
+                bear = bear[bear["rel_strength_63"] <= rel_cut].copy()
+            if not bear.empty:
+                bear["weakness"] = (
+                    (-bear["rel_strength_63"]).clip(lower=0.0)
+                    + float(cfg.sleeve_bear_short_score_weight) * (-bear["score"]).clip(lower=0.0)
+                )
+                bear = bear.sort_values("weakness", ascending=False).head(max(1, int(cfg.sleeve_bear_short_max_names)))
+                w_raw = bear.set_index("asset")["weakness"].replace(0.0, np.nan).dropna()
+                if not w_raw.empty:
+                    w_raw = w_raw.reindex([str(a) for a in w_raw.index if str(a) in out.index]).dropna()
+                    if not w_raw.empty:
+                        target_abs = float(
+                            np.clip(
+                                cfg.sleeve_bear_short_gross,
+                                0.0,
+                                max(0.0, 0.75 * float(gross_target)),
+                            )
+                        )
+                        out.loc[w_raw.index] = out.loc[w_raw.index] - target_abs * (w_raw / float(w_raw.sum()))
+
+    # Sleeve 2: choppy-market mean-reversion overlay, approximately dollar-neutral.
+    if exp.use_choppy_vol_sleeve:
+        choppy_regime = (
+            np.isfinite(curr_spy_vol)
+            and np.isfinite(train_spy_vol_median)
+            and curr_spy_vol >= float(cfg.sleeve_choppy_vol_mult) * train_spy_vol_median
+            and np.isfinite(spy_trend_gap)
+            and abs(spy_trend_gap) <= float(cfg.sleeve_choppy_trend_gap_abs_max)
+            and ((not np.isfinite(curr_spy_dd)) or curr_spy_dd >= float(cfg.sleeve_choppy_min_drawdown))
+        )
+        if choppy_regime:
+            ch = p[p["adv_rank_pct"] >= float(cfg.smart_liquidity_min_rank_pct)].copy()
+            if not ch.empty:
+                ch["ret5_over_vol"] = ch["ret_5"] / ch["vol_21"].abs().clip(lower=1e-6)
+                z = float(max(0.25, cfg.sleeve_choppy_revert_z))
+                px_gate = float(max(0.01, cfg.sleeve_choppy_px_ema_gate))
+                long_c = ch[
+                    (ch["ret5_over_vol"] <= -z)
+                    & (ch["px_over_ema20"] <= px_gate)
+                ].copy()
+                short_c = ch[
+                    (ch["ret5_over_vol"] >= z)
+                    & (ch["px_over_ema20"] >= -px_gate)
+                ].copy()
+                k = max(1, int(cfg.sleeve_choppy_max_names_per_side))
+                long_c = long_c.sort_values("ret5_over_vol", ascending=True).head(k)
+                short_c = short_c.sort_values("ret5_over_vol", ascending=False).head(k)
+                g_total = float(np.clip(cfg.sleeve_choppy_gross, 0.0, max(0.0, 0.75 * float(gross_target))))
+                g_side = 0.5 * g_total
+                if not long_c.empty:
+                    lr = (-long_c.set_index("asset")["ret5_over_vol"]).clip(lower=0.0).replace(0.0, np.nan).dropna()
+                    if not lr.empty:
+                        lr = lr.reindex([str(a) for a in lr.index if str(a) in out.index]).dropna()
+                        if not lr.empty:
+                            out.loc[lr.index] = out.loc[lr.index] + g_side * (lr / float(lr.sum()))
+                if not short_c.empty:
+                    sr = (short_c.set_index("asset")["ret5_over_vol"]).clip(lower=0.0).replace(0.0, np.nan).dropna()
+                    if not sr.empty:
+                        sr = sr.reindex([str(a) for a in sr.index if str(a) in out.index]).dropna()
+                        if not sr.empty:
+                            out.loc[sr.index] = out.loc[sr.index] - g_side * (sr / float(sr.sum()))
+
+    return out.clip(lower=-float(max_abs_weight), upper=float(max_abs_weight))
+
+
 def _simulate_fold(
     test_panel: pd.DataFrame,
     trades: pd.DataFrame,
@@ -2823,6 +3038,10 @@ def _simulate_fold(
     spy_up = (spy > spy_ma200).astype(float).fillna(0.0)
     spy_vol21 = spy.pct_change().rolling(cfg.vol_window_days, min_periods=cfg.vol_window_days).std()
     spy_drawdown = spy / spy.cummax() - 1.0
+    spy_trend_gap = spy / spy_ma200.replace(0.0, np.nan) - 1.0
+    day_panel_map: dict[pd.Timestamp, pd.DataFrame] = {
+        pd.Timestamp(ts): g.copy() for ts, g in test_panel.groupby("timestamp", sort=False)
+    }
 
     gross_target_local = (
         float(exp.gross_target_override) if exp.gross_target_override is not None else cfg.gross_target
@@ -2862,8 +3081,11 @@ def _simulate_fold(
         hist_spy: list[float] = []
         for i in range(1, len(dates)):
             active = t[(t["start_idx"] <= i) & (t["end_idx"] >= i)]
+            day_panel = day_panel_map.get(pd.Timestamp(dates[i]), pd.DataFrame())
             curr_spy_up = bool(float(spy_up.iloc[i]) > 0.5) if np.isfinite(spy_up.iloc[i]) else False
             curr_spy_vol = float(spy_vol21.iloc[i]) if np.isfinite(spy_vol21.iloc[i]) else float("nan")
+            curr_spy_dd = float(spy_drawdown.iloc[i]) if np.isfinite(spy_drawdown.iloc[i]) else float("nan")
+            curr_spy_trend_gap = float(spy_trend_gap.iloc[i]) if np.isfinite(spy_trend_gap.iloc[i]) else float("nan")
             stressed = (not curr_spy_up) or (
                 np.isfinite(curr_spy_vol) and np.isfinite(train_spy_vol_median) and curr_spy_vol > train_spy_vol_median
             )
@@ -2904,6 +3126,22 @@ def _simulate_fold(
                 w = w * float(gross_scale)
                 w = w.clip(-max_abs_weight_local, max_abs_weight_local)
 
+            if exp.use_bear_short_sleeve or exp.use_choppy_vol_sleeve:
+                sleeve_w = _orthogonal_sleeve_overlay(
+                    day_panel=day_panel,
+                    assets=assets,
+                    cfg=cfg,
+                    exp=exp,
+                    gross_target=gross_target_local,
+                    max_abs_weight=max_abs_weight_local,
+                    curr_spy_up=curr_spy_up,
+                    curr_spy_vol=curr_spy_vol,
+                    curr_spy_dd=curr_spy_dd,
+                    train_spy_vol_median=train_spy_vol_median,
+                    spy_trend_gap=curr_spy_trend_gap,
+                )
+                w = (w + sleeve_w).clip(-max_abs_weight_local, max_abs_weight_local)
+
             if exp.use_portfolio_vol_target:
                 if len(hist_net) >= cfg.portfolio_vol_lookback_days:
                     rv = float(np.std(hist_net[-cfg.portfolio_vol_lookback_days :], ddof=1)) * math.sqrt(252.0)
@@ -2918,7 +3156,6 @@ def _simulate_fold(
                         w = w * scale
                 # Re-apply per-asset cap after scaling.
                 w = w.clip(-max_abs_weight_local, max_abs_weight_local)
-            curr_spy_dd = float(spy_drawdown.iloc[i]) if np.isfinite(spy_drawdown.iloc[i]) else float("nan")
             if exp.use_market_stop_loss:
                 if exp.use_market_stop_state_machine:
                     stage1_dd = (
