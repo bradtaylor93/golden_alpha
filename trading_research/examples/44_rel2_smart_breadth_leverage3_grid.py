@@ -235,6 +235,9 @@ def _load_broad_us_universe(max_assets: int) -> tuple[str, ...]:
 
     Uses CSV data sources first (no optional HTML parser dependency).
     """
+    if int(max_assets) <= len(UNIVERSE_170):
+        return tuple(list(UNIVERSE_170)[: max(1, int(max_assets))])
+
     csv_urls = (
         "https://datahub.io/core/s-and-p-500-companies/r/constituents.csv",
         "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv",
@@ -326,7 +329,7 @@ class Config:
     dynamic_cluster_abs_weight_cap_stressed: float = 0.54
     dynamic_cluster_abs_weight_cap_calm: float = 0.90
     # Smart-breadth controls.
-    max_universe_assets: int = 350
+    max_universe_assets: int = 170
     asset_efficacy_horizon_days: int = 21
     asset_efficacy_min_obs: int = 120
     asset_efficacy_quantile: float = 0.55
