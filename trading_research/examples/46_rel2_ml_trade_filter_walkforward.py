@@ -522,6 +522,12 @@ class ExperimentSpec:
     use_entry_no_chase_filter: bool = False
     use_bear_short_sleeve: bool = False
     use_choppy_vol_sleeve: bool = False
+    sleeve_bear_short_spy_dd_threshold_override: float | None = None
+    sleeve_bear_short_vol_mult_override: float | None = None
+    sleeve_bear_short_rel_quantile_override: float | None = None
+    sleeve_bear_short_max_names_override: int | None = None
+    sleeve_bear_short_gross_override: float | None = None
+    sleeve_bear_short_score_weight_override: float | None = None
     use_meta_exit_hold_bucket: bool = False
     meta_exit_short_days_override: int | None = None
     meta_exit_long_days_override: int | None = None
@@ -817,6 +823,105 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         market_stop_stage2_scale_override=0.20,
         market_stop_state_recovery_override=0.04,
         use_bear_short_sleeve=True,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_2x_ml_champion_sleeve_bear_short_sweep_tight",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=2.0,
+        max_abs_weight_per_asset_override=0.10,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_bear_short_sleeve=True,
+        sleeve_bear_short_spy_dd_threshold_override=-0.10,
+        sleeve_bear_short_vol_mult_override=1.15,
+        sleeve_bear_short_rel_quantile_override=0.15,
+        sleeve_bear_short_max_names_override=14,
+        sleeve_bear_short_gross_override=0.45,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_2x_ml_champion_sleeve_bear_short_sweep_balanced",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=2.0,
+        max_abs_weight_per_asset_override=0.10,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_bear_short_sleeve=True,
+        sleeve_bear_short_spy_dd_threshold_override=-0.08,
+        sleeve_bear_short_vol_mult_override=1.00,
+        sleeve_bear_short_rel_quantile_override=0.15,
+        sleeve_bear_short_max_names_override=16,
+        sleeve_bear_short_gross_override=0.50,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_2x_ml_champion_sleeve_bear_short_sweep_loose",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=2.0,
+        max_abs_weight_per_asset_override=0.11,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_bear_short_sleeve=True,
+        sleeve_bear_short_spy_dd_threshold_override=-0.06,
+        sleeve_bear_short_vol_mult_override=0.95,
+        sleeve_bear_short_rel_quantile_override=0.25,
+        sleeve_bear_short_max_names_override=22,
+        sleeve_bear_short_gross_override=0.65,
     ),
     ExperimentSpec(
         name="smart_breadth_quality_2x_ml_champion_sleeve_choppy_vol",
@@ -2913,6 +3018,37 @@ def _orthogonal_sleeve_overlay(
     if day_panel.empty or (not exp.use_bear_short_sleeve and not exp.use_choppy_vol_sleeve):
         return out
 
+    bear_dd_thr = (
+        float(exp.sleeve_bear_short_spy_dd_threshold_override)
+        if exp.sleeve_bear_short_spy_dd_threshold_override is not None
+        else float(cfg.sleeve_bear_short_spy_dd_threshold)
+    )
+    bear_vol_mult = (
+        float(exp.sleeve_bear_short_vol_mult_override)
+        if exp.sleeve_bear_short_vol_mult_override is not None
+        else float(cfg.sleeve_bear_short_vol_mult)
+    )
+    bear_rel_q = (
+        float(exp.sleeve_bear_short_rel_quantile_override)
+        if exp.sleeve_bear_short_rel_quantile_override is not None
+        else float(cfg.sleeve_bear_short_rel_quantile)
+    )
+    bear_max_names = (
+        int(exp.sleeve_bear_short_max_names_override)
+        if exp.sleeve_bear_short_max_names_override is not None
+        else int(cfg.sleeve_bear_short_max_names)
+    )
+    bear_gross = (
+        float(exp.sleeve_bear_short_gross_override)
+        if exp.sleeve_bear_short_gross_override is not None
+        else float(cfg.sleeve_bear_short_gross)
+    )
+    bear_score_w = (
+        float(exp.sleeve_bear_short_score_weight_override)
+        if exp.sleeve_bear_short_score_weight_override is not None
+        else float(cfg.sleeve_bear_short_score_weight)
+    )
+
     p = day_panel.copy()
     p["asset"] = p["asset"].astype(str)
     p = p[p["asset"].isin(assets)].copy()
@@ -2930,10 +3066,10 @@ def _orthogonal_sleeve_overlay(
         bear_regime = (
             (not curr_spy_up)
             and np.isfinite(curr_spy_dd)
-            and curr_spy_dd <= float(cfg.sleeve_bear_short_spy_dd_threshold)
+            and curr_spy_dd <= bear_dd_thr
             and np.isfinite(curr_spy_vol)
             and np.isfinite(train_spy_vol_median)
-            and curr_spy_vol >= float(cfg.sleeve_bear_short_vol_mult) * train_spy_vol_median
+            and curr_spy_vol >= bear_vol_mult * train_spy_vol_median
         )
         if bear_regime:
             bear = p[
@@ -2942,22 +3078,22 @@ def _orthogonal_sleeve_overlay(
                 & (p["ema20_over_ema50"] <= 0.0)
             ].copy()
             if not bear.empty:
-                rel_q = float(np.clip(cfg.sleeve_bear_short_rel_quantile, 0.01, 0.80))
+                rel_q = float(np.clip(bear_rel_q, 0.01, 0.80))
                 rel_cut = float(bear["rel_strength_63"].quantile(rel_q))
                 bear = bear[bear["rel_strength_63"] <= rel_cut].copy()
             if not bear.empty:
                 bear["weakness"] = (
                     (-bear["rel_strength_63"]).clip(lower=0.0)
-                    + float(cfg.sleeve_bear_short_score_weight) * (-bear["score"]).clip(lower=0.0)
+                    + bear_score_w * (-bear["score"]).clip(lower=0.0)
                 )
-                bear = bear.sort_values("weakness", ascending=False).head(max(1, int(cfg.sleeve_bear_short_max_names)))
+                bear = bear.sort_values("weakness", ascending=False).head(max(1, bear_max_names))
                 w_raw = bear.set_index("asset")["weakness"].replace(0.0, np.nan).dropna()
                 if not w_raw.empty:
                     w_raw = w_raw.reindex([str(a) for a in w_raw.index if str(a) in out.index]).dropna()
                     if not w_raw.empty:
                         target_abs = float(
                             np.clip(
-                                cfg.sleeve_bear_short_gross,
+                                bear_gross,
                                 0.0,
                                 max(0.0, 0.75 * float(gross_target)),
                             )
