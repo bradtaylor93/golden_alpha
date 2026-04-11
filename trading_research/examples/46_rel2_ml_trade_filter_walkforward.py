@@ -729,6 +729,8 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         use_soft_cashflow_weighting=True,
         cashflow_soft_floor_override=0.55,
         cashflow_soft_min_scale_override=0.70,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.10,
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_champion_v3_softw",
