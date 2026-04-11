@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -355,6 +356,8 @@ class Config:
     trade_filter_min_train_trades: int = 120
     trade_filter_prob_quantile: float = 0.60
     trade_filter_soft_scale: float = 0.50
+    trade_filter_ensemble_hgb_weight: float = 0.60
+    trade_filter_ensemble_rf_weight: float = 0.40
 
 
 @dataclass(frozen=True)
@@ -604,6 +607,41 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         trade_filter_backfill_fraction_override=0.90,
         trade_filter_prob_quantile_override=0.60,
     ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_v2",
+        use_reentry_cooldown=True,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        use_trade_filter_soft_weighting=True,
+        trade_filter_backfill_fraction_override=0.88,
+        trade_filter_prob_quantile_override=0.58,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_v2b",
+        use_reentry_cooldown=True,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+    ),
 )
 
 
@@ -803,6 +841,16 @@ TRADE_FILTER_FEATURES: tuple[str, ...] = (
     "confidence_score",
     "edge_proxy",
     "trend_sign",
+    # richer interaction / normalization features
+    "abs_score",
+    "score_x_rel",
+    "score_over_vol",
+    "past_return_over_vol",
+    "rel_over_spy_vol",
+    "liquidity_edge",
+    "rank_minus_adv",
+    "sign_x_score",
+    "sign_x_rel",
 )
 
 
@@ -814,19 +862,36 @@ def _trade_feature_row(
     conf: float,
     edge_proxy: float,
 ) -> dict[str, float]:
+    score = float(row["score"])
+    rel = float(row["rel_strength_63"])
+    past = float(row["past_return"])
+    vol = float(row["vol_21"])
+    adv = float(row["adv_rank_pct"])
+    spy_vol = float(row["spy_vol_21"])
+    vol_safe = max(1e-6, abs(vol))
+    spy_vol_safe = max(1e-6, abs(spy_vol))
     return {
         "rank_pct": float(row["rank_pct"]),
-        "rel_strength_63": float(row["rel_strength_63"]),
-        "score": float(row["score"]),
-        "past_return": float(row["past_return"]),
-        "vol_21": float(row["vol_21"]),
-        "adv_rank_pct": float(row["adv_rank_pct"]),
+        "rel_strength_63": rel,
+        "score": score,
+        "past_return": past,
+        "vol_21": vol,
+        "adv_rank_pct": adv,
         "spy_up": float(row["spy_up"]),
-        "spy_vol_21": float(row["spy_vol_21"]),
+        "spy_vol_21": spy_vol,
         "signal_strength": float(strength),
         "confidence_score": float(conf),
         "edge_proxy": float(edge_proxy),
         "trend_sign": float(trend_sign),
+        "abs_score": float(abs(score)),
+        "score_x_rel": float(score * rel),
+        "score_over_vol": float(score / vol_safe),
+        "past_return_over_vol": float(past / vol_safe),
+        "rel_over_spy_vol": float(rel / spy_vol_safe),
+        "liquidity_edge": float((1.0 - np.clip(adv, 0.0, 1.0)) * edge_proxy),
+        "rank_minus_adv": float(float(row["rank_pct"]) - adv),
+        "sign_x_score": float(trend_sign * score),
+        "sign_x_rel": float(trend_sign * rel),
     }
 
 
@@ -924,10 +989,11 @@ def _fit_trade_filter_model(
     y = y[x.index.to_numpy(dtype=int)]
 
     model = HistGradientBoostingClassifier(
-        learning_rate=0.05,
-        max_depth=3,
-        max_iter=250,
-        min_samples_leaf=40,
+        learning_rate=0.035,
+        max_depth=5,
+        max_iter=420,
+        min_samples_leaf=24,
+        l2_regularization=0.04,
         random_state=42,
     )
     feature_cols = list(TRADE_FILTER_FEATURES)
@@ -1879,6 +1945,7 @@ def main() -> None:
     trades_oos = pd.concat(trades_all_list, ignore_index=True) if trades_all_list else pd.DataFrame()
 
     base = overall_df[overall_df["strategy"] == "smart_breadth_quality_3x"]
+    champion = overall_df[overall_df["strategy"] == "smart_breadth_quality_3x_ml_filter_q60_backfill85"]
     best = overall_df.iloc[0].to_dict() if not overall_df.empty else {}
     uplift = {}
     if not base.empty and best:
@@ -1911,6 +1978,9 @@ def main() -> None:
         },
         "experiments": [e.__dict__ for e in EXPERIMENTS],
         "uplift": uplift,
+        "champion_strategy": (
+            champion.iloc[0].to_dict() if not champion.empty else None
+        ),
     }
 
     fold_df.to_csv(reports_dir / "walkforward_fold_metrics.csv", index=False)
