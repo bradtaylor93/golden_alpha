@@ -358,6 +358,12 @@ class Config:
     trade_filter_soft_scale: float = 0.50
     trade_filter_ensemble_hgb_weight: float = 0.60
     trade_filter_ensemble_rf_weight: float = 0.40
+    trade_filter_recency_half_life_days: int = 252
+    trade_filter_edge_boost: float = 0.40
+    trade_filter_threshold_min_keep_fraction: float = 0.25
+    trade_filter_threshold_max_keep_fraction: float = 0.85
+    trade_filter_threshold_min_selected: int = 40
+    trade_filter_threshold_grid_size: int = 21
     # Global risk-on gate: do not open trades unless SPY 3-month return is positive.
     require_spy_3m_positive: bool = True
 
@@ -415,6 +421,8 @@ class ExperimentSpec:
     use_trade_filter_hard_gate: bool = True
     use_trade_filter_soft_weighting: bool = False
     trade_filter_backfill_fraction_override: float | None = None
+    use_trade_filter_recency_weighting: bool = False
+    use_trade_filter_adaptive_threshold: bool = False
 
 
 EXPERIMENTS: tuple[ExperimentSpec, ...] = (
@@ -644,6 +652,45 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         trade_filter_backfill_fraction_override=0.82,
         trade_filter_prob_quantile_override=0.57,
     ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_trade_filter_recency_weighting=True,
+        use_trade_filter_adaptive_threshold=True,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_v3_softw",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        use_trade_filter_soft_weighting=True,
+        trade_filter_backfill_fraction_override=0.86,
+        trade_filter_prob_quantile_override=0.57,
+        use_trade_filter_recency_weighting=True,
+        use_trade_filter_adaptive_threshold=True,
+    ),
 )
 
 
@@ -861,8 +908,11 @@ TRADE_FILTER_FEATURES: tuple[str, ...] = (
     "score_sq",
     "rel_sq",
     "spy_ret_63",
+    "spy_ret_126",
     "liquidity_edge",
     "rank_minus_adv",
+    "rel_minus_score",
+    "rank_x_score",
     "sign_x_score",
     "sign_x_rel",
 )
@@ -910,11 +960,70 @@ def _trade_feature_row(
         "score_sq": float(score * score),
         "rel_sq": float(rel * rel),
         "spy_ret_63": float(row["spy_ret_63"]),
+        "spy_ret_126": float(row["spy_ret_126"]),
         "liquidity_edge": float((1.0 - np.clip(adv, 0.0, 1.0)) * edge_proxy),
         "rank_minus_adv": float(float(row["rank_pct"]) - adv),
+        "rel_minus_score": float(rel - score),
+        "rank_x_score": float(float(row["rank_pct"]) * score),
         "sign_x_score": float(trend_sign * score),
         "sign_x_rel": float(trend_sign * rel),
     }
+
+
+def _select_trade_filter_threshold(
+    *,
+    prob: np.ndarray,
+    net_ret: np.ndarray,
+    cfg: Config,
+    q: float,
+    use_adaptive: bool,
+) -> float:
+    q_use = float(np.clip(q, 0.0, 0.95))
+    base = float(np.quantile(prob, q_use))
+    if (not use_adaptive) or prob.size < 120 or net_ret.size != prob.size:
+        return base if np.isfinite(base) else 0.50
+
+    grid_size = max(7, int(cfg.trade_filter_threshold_grid_size))
+    q_grid = np.linspace(0.05, 0.95, grid_size)
+    thresholds = np.unique(np.quantile(prob, q_grid))
+    if thresholds.size == 0:
+        return base if np.isfinite(base) else 0.50
+
+    n_total = int(prob.size)
+    min_keep = max(
+        int(cfg.trade_filter_threshold_min_selected),
+        int(round(n_total * float(np.clip(cfg.trade_filter_threshold_min_keep_fraction, 0.0, 1.0)))),
+    )
+    max_keep = max(
+        min_keep + 1,
+        int(round(n_total * float(np.clip(cfg.trade_filter_threshold_max_keep_fraction, 0.0, 1.0)))),
+    )
+    target_keep = float(np.clip(1.0 - q_use, 0.05, 0.95))
+
+    best_thr = base
+    best_obj = float("-inf")
+    for thr in thresholds.tolist():
+        mask = prob >= float(thr)
+        n_sel = int(mask.sum())
+        if n_sel < min_keep or n_sel > max_keep:
+            continue
+        selected = net_ret[mask]
+        if selected.size < 2:
+            continue
+        mu = float(np.mean(selected))
+        sigma = float(np.std(selected, ddof=1))
+        if not np.isfinite(mu):
+            continue
+        cov = float(n_sel) / float(max(1, n_total))
+        keep_gap = abs(cov - target_keep)
+        # Sharpe-like term + mean-return term, with a mild penalty for extreme keep rates.
+        obj = (mu / max(1e-6, sigma)) * math.sqrt(cov) + 40.0 * mu - 0.10 * keep_gap
+        if obj > best_obj:
+            best_obj = obj
+            best_thr = float(thr)
+    if not np.isfinite(best_thr):
+        return 0.50
+    return float(best_thr)
 
 
 def _fit_trade_filter_model(
@@ -957,6 +1066,9 @@ def _fit_trade_filter_model(
     one_way = _one_way_cost_return(cfg)
     x_rows: list[dict[str, float]] = []
     y_rows: list[int] = []
+    net_ret_rows: list[float] = []
+    edge_rows: list[float] = []
+    signal_ts_rows: list[pd.Timestamp] = []
     for _, tr in train_trades.iterrows():
         asset = str(tr["asset"])
         try:
@@ -995,6 +1107,9 @@ def _fit_trade_filter_model(
             )
         )
         y_rows.append(1 if net_ret > 0.0 else 0)
+        net_ret_rows.append(float(net_ret))
+        edge_rows.append(float(edge_proxy))
+        signal_ts_rows.append(pd.Timestamp(signal_ts))
 
     if len(x_rows) < int(cfg.trade_filter_min_train_trades):
         return None, None
@@ -1008,7 +1123,32 @@ def _fit_trade_filter_model(
     x = x.replace([np.inf, -np.inf], np.nan).dropna()
     if x.empty:
         return None, None
-    y = y[x.index.to_numpy(dtype=int)]
+    keep_idx = x.index.to_numpy(dtype=int)
+    y = y[keep_idx]
+    net_ret_arr = np.asarray(net_ret_rows, dtype=float)[keep_idx]
+    edge_arr = np.asarray(edge_rows, dtype=float)[keep_idx]
+    ts_arr = pd.to_datetime(pd.Series(signal_ts_rows), utc=True, errors="coerce").iloc[keep_idx].reset_index(drop=True)
+
+    sample_weight = np.ones(len(y), dtype=float)
+    if exp.use_trade_filter_recency_weighting and len(y) > 0:
+        age_days = np.zeros(len(y), dtype=float)
+        if not ts_arr.empty and ts_arr.notna().any():
+            latest_ts = ts_arr.max()
+            age_days = (
+                (latest_ts - ts_arr).dt.total_seconds().fillna(0.0).to_numpy(dtype=float) / 86400.0
+            )
+            age_days = np.clip(age_days, 0.0, None)
+        rec_half = max(1.0, float(cfg.trade_filter_recency_half_life_days))
+        recency_w = np.power(0.5, age_days / rec_half)
+        edge_abs = np.abs(edge_arr)
+        edge_scale = float(np.nanpercentile(edge_abs, 80.0)) if edge_abs.size else 1.0
+        if (not np.isfinite(edge_scale)) or edge_scale <= 1e-8:
+            edge_scale = 1.0
+        edge_w = 1.0 + float(cfg.trade_filter_edge_boost) * np.clip(edge_abs / edge_scale, 0.0, 2.0)
+        sample_weight = recency_w * edge_w
+        sample_weight = np.where(np.isfinite(sample_weight), sample_weight, 1.0)
+        sample_weight = np.clip(sample_weight, 0.10, 10.0)
+        sample_weight = sample_weight / max(1e-6, float(sample_weight.mean()))
 
     model = HistGradientBoostingClassifier(
         learning_rate=0.035,
@@ -1019,14 +1159,20 @@ def _fit_trade_filter_model(
         random_state=42,
     )
     feature_cols = list(TRADE_FILTER_FEATURES)
-    model.fit(x[feature_cols], y)
+    model.fit(x[feature_cols], y, sample_weight=sample_weight)
     prob = model.predict_proba(x[feature_cols])[:, 1]
     q = (
         float(exp.trade_filter_prob_quantile_override)
         if exp.trade_filter_prob_quantile_override is not None
         else float(cfg.trade_filter_prob_quantile)
     )
-    threshold = float(np.quantile(prob, np.clip(q, 0.0, 0.95)))
+    threshold = _select_trade_filter_threshold(
+        prob=np.asarray(prob, dtype=float),
+        net_ret=np.asarray(net_ret_arr, dtype=float),
+        cfg=cfg,
+        q=q,
+        use_adaptive=exp.use_trade_filter_adaptive_threshold,
+    )
     if not np.isfinite(threshold):
         threshold = 0.50
     return model, threshold
@@ -1971,6 +2117,8 @@ def main() -> None:
 
     base = overall_df[overall_df["strategy"] == "smart_breadth_quality_3x"]
     champion = overall_df[overall_df["strategy"] == "smart_breadth_quality_3x_ml_champion"]
+    if champion.empty and not overall_df.empty:
+        champion = overall_df[overall_df["strategy"].astype(str).str.contains("ml_champion", na=False)]
     best = overall_df.iloc[0].to_dict() if not overall_df.empty else {}
     uplift = {}
     if not base.empty and best:
