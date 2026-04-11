@@ -983,6 +983,7 @@ def _build_trades(
 
         # Pre-filter and compute priority/confidence at this date.
         cands: list[dict[str, object]] = []
+        rejected_by_filter: list[dict[str, object]] = []
         for _, r in daily.iterrows():
             asset = str(r["asset"])
             rank = float(r["rank_pct"])
@@ -1079,6 +1080,17 @@ def _build_trades(
                 if not np.isfinite(prob_keep):
                     prob_keep = 0.50
                 if exp.use_trade_filter_hard_gate and prob_keep < float(trade_filter_threshold):
+                    rejected_by_filter.append(
+                        {
+                            "asset": asset,
+                            "row": r,
+                            "trend_sign": trend_sign,
+                            "confidence": conf,
+                            "strength": strength,
+                            "priority": edge_proxy,
+                            "trade_filter_prob": prob_keep,
+                        }
+                    )
                     continue
                 if exp.use_trade_filter_soft_weighting:
                     pivot = float(trade_filter_threshold) if np.isfinite(float(trade_filter_threshold)) else 0.50
@@ -1102,6 +1114,18 @@ def _build_trades(
                     "trade_filter_prob": prob_keep,
                 }
             )
+
+        if exp.trade_filter_backfill_fraction_override is not None and rejected_by_filter:
+            pre_filter_count = len(cands) + len(rejected_by_filter)
+            target_count = int(
+                max(
+                    len(cands),
+                    round(pre_filter_count * float(np.clip(exp.trade_filter_backfill_fraction_override, 0.0, 1.0))),
+                )
+            )
+            if target_count > len(cands):
+                rejected_by_filter.sort(key=lambda x: float(x.get("priority", 0.0)), reverse=True)
+                cands.extend(rejected_by_filter[: max(0, target_count - len(cands))])
 
         if not cands:
             continue
