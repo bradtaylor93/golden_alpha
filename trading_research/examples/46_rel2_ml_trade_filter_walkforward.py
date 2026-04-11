@@ -358,6 +358,8 @@ class Config:
     trade_filter_soft_scale: float = 0.50
     trade_filter_ensemble_hgb_weight: float = 0.60
     trade_filter_ensemble_rf_weight: float = 0.40
+    # Global risk-on gate: do not open trades unless SPY 3-month return is positive.
+    require_spy_3m_positive: bool = True
 
 
 @dataclass(frozen=True)
@@ -418,7 +420,7 @@ class ExperimentSpec:
 EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ExperimentSpec(
         name="smart_breadth_quality_3x",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -431,7 +433,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_filter_q60",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -446,7 +448,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_filter_q70",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -461,7 +463,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_filter_q55",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -476,7 +478,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_filter_q58",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -491,7 +493,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_filter_q55_softw",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -507,7 +509,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_filter_q58_softw",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -523,7 +525,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_filter_q55_hybrid",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -540,7 +542,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_filter_q60_hybrid",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -557,7 +559,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_filter_q60_hybrid_backfill90",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -575,7 +577,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_filter_q60_backfill85",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -592,7 +594,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_filter_q60_backfill90",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -609,7 +611,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_champion_v2",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -627,7 +629,7 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_champion_v2b",
-        use_reentry_cooldown=True,
+        use_reentry_cooldown=False,
         use_liquidity_filter=True,
         use_asset_efficacy_filter=True,
         use_dynamic_cluster_caps=True,
@@ -707,12 +709,14 @@ def _build_panel(bars: pd.DataFrame, spy: pd.DataFrame, cfg: Config) -> pd.DataF
     spy["close"] = pd.to_numeric(spy["close"], errors="coerce")
     spy = spy.dropna(subset=["close"]).copy()
     spy["spy_ret_63"] = spy["close"] / spy["close"].shift(look) - 1.0
+    spy["spy_ret_126"] = spy["close"] / spy["close"].shift(63) - 1.0
+    spy["spy_3m_positive"] = (spy["spy_ret_126"] > 0.0).astype(float)
     spy["spy_ma200"] = spy["close"].rolling(200, min_periods=200).mean()
     spy["spy_up"] = (spy["close"] > spy["spy_ma200"]).astype(float)
     spy["spy_vol_21"] = spy["close"].pct_change().rolling(cfg.vol_window_days, min_periods=cfg.vol_window_days).std()
     spy = spy.rename(columns={"close": "spy_close"})
     frame = frame.merge(
-        spy[["timestamp", "spy_close", "spy_ret_63", "spy_up", "spy_vol_21"]],
+        spy[["timestamp", "spy_close", "spy_ret_63", "spy_ret_126", "spy_3m_positive", "spy_up", "spy_vol_21"]],
         on="timestamp",
         how="left",
     )
@@ -729,6 +733,8 @@ def _build_panel(bars: pd.DataFrame, spy: pd.DataFrame, cfg: Config) -> pd.DataF
             "vol_21",
             "adv_rank_pct",
             "spy_close",
+            "spy_ret_126",
+            "spy_3m_positive",
             "spy_up",
             "spy_vol_21",
             "rel_strength_63",
@@ -847,6 +853,14 @@ TRADE_FILTER_FEATURES: tuple[str, ...] = (
     "score_over_vol",
     "past_return_over_vol",
     "rel_over_spy_vol",
+    "vol_vs_spy_vol",
+    "edge_over_vol",
+    "conf_x_rank",
+    "conf_x_rel",
+    "rank_x_rel",
+    "score_sq",
+    "rel_sq",
+    "spy_ret_63",
     "liquidity_edge",
     "rank_minus_adv",
     "sign_x_score",
@@ -888,6 +902,14 @@ def _trade_feature_row(
         "score_over_vol": float(score / vol_safe),
         "past_return_over_vol": float(past / vol_safe),
         "rel_over_spy_vol": float(rel / spy_vol_safe),
+        "vol_vs_spy_vol": float(vol / spy_vol_safe),
+        "edge_over_vol": float(edge_proxy / vol_safe),
+        "conf_x_rank": float(conf * float(row["rank_pct"])),
+        "conf_x_rel": float(conf * rel),
+        "rank_x_rel": float(float(row["rank_pct"]) * rel),
+        "score_sq": float(score * score),
+        "rel_sq": float(rel * rel),
+        "spy_ret_63": float(row["spy_ret_63"]),
         "liquidity_edge": float((1.0 - np.clip(adv, 0.0, 1.0)) * edge_proxy),
         "rank_minus_adv": float(float(row["rank_pct"]) - adv),
         "sign_x_score": float(trend_sign * score),
@@ -1089,7 +1111,10 @@ def _build_trades(
                     continue
             if sig_idx <= int(last_end_by_asset.get(asset, -1)):
                 continue
-            if exp.use_reentry_cooldown and sig_idx <= int(cooldown_until_by_asset.get(asset, -1)):
+            # Cooldown disabled per latest rule set.
+            if False and exp.use_reentry_cooldown and sig_idx <= int(cooldown_until_by_asset.get(asset, -1)):
+                continue
+            if cfg.require_spy_3m_positive and float(r.get("spy_3m_positive", 0.0)) <= 0.0:
                 continue
             if exp.use_confidence_calibration:
                 rank_conf = float(np.clip((rank - top_q) / max(1e-6, 1.0 - top_q), 0.0, 1.0))
@@ -1282,7 +1307,7 @@ def _build_trades(
                 }
             )
             last_end_by_asset[asset] = exit_idx
-            if exp.use_reentry_cooldown:
+            if False and exp.use_reentry_cooldown:
                 if exp.use_side_aware_cooldown:
                     pnl_sign = 1.0
                     if entry_px > 0:
@@ -1945,7 +1970,7 @@ def main() -> None:
     trades_oos = pd.concat(trades_all_list, ignore_index=True) if trades_all_list else pd.DataFrame()
 
     base = overall_df[overall_df["strategy"] == "smart_breadth_quality_3x"]
-    champion = overall_df[overall_df["strategy"] == "smart_breadth_quality_3x_ml_filter_q60_backfill85"]
+    champion = overall_df[overall_df["strategy"] == "smart_breadth_quality_3x_ml_champion"]
     best = overall_df.iloc[0].to_dict() if not overall_df.empty else {}
     uplift = {}
     if not base.empty and best:
