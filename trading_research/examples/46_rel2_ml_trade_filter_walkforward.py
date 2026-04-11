@@ -3218,12 +3218,18 @@ def _simulate_fold(
         hist_strat: list[float] = []
         hist_spy: list[float] = []
         for i in range(1, len(dates)):
-            active = t[(t["start_idx"] <= i) & (t["end_idx"] >= i)]
-            day_panel = day_panel_map.get(pd.Timestamp(dates[i]), pd.DataFrame())
-            curr_spy_up = bool(float(spy_up.iloc[i]) > 0.5) if np.isfinite(spy_up.iloc[i]) else False
-            curr_spy_vol = float(spy_vol21.iloc[i]) if np.isfinite(spy_vol21.iloc[i]) else float("nan")
-            curr_spy_dd = float(spy_drawdown.iloc[i]) if np.isfinite(spy_drawdown.iloc[i]) else float("nan")
-            curr_spy_trend_gap = float(spy_trend_gap.iloc[i]) if np.isfinite(spy_trend_gap.iloc[i]) else float("nan")
+            # Return at i is close-to-close from (i-1) -> i. Use only info known at (i-1).
+            ref_i = i - 1
+            # Trade enters at close[start_idx] and exits at close[end_idx].
+            # Therefore, it is active for return bars where start_idx < i <= end_idx.
+            active = t[(t["start_idx"] < i) & (t["end_idx"] >= i)]
+            day_panel = day_panel_map.get(pd.Timestamp(dates[ref_i]), pd.DataFrame())
+            curr_spy_up = bool(float(spy_up.iloc[ref_i]) > 0.5) if np.isfinite(spy_up.iloc[ref_i]) else False
+            curr_spy_vol = float(spy_vol21.iloc[ref_i]) if np.isfinite(spy_vol21.iloc[ref_i]) else float("nan")
+            curr_spy_dd = float(spy_drawdown.iloc[ref_i]) if np.isfinite(spy_drawdown.iloc[ref_i]) else float("nan")
+            curr_spy_trend_gap = (
+                float(spy_trend_gap.iloc[ref_i]) if np.isfinite(spy_trend_gap.iloc[ref_i]) else float("nan")
+            )
             stressed = (not curr_spy_up) or (
                 np.isfinite(curr_spy_vol) and np.isfinite(train_spy_vol_median) and curr_spy_vol > train_spy_vol_median
             )
