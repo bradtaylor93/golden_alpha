@@ -668,8 +668,8 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         use_trade_filter_hard_gate=True,
         trade_filter_backfill_fraction_override=0.82,
         trade_filter_prob_quantile_override=0.57,
-        use_trade_filter_recency_weighting=True,
-        use_trade_filter_adaptive_threshold=True,
+        use_trade_filter_recency_weighting=False,
+        use_trade_filter_adaptive_threshold=False,
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_champion_v3_softw",
