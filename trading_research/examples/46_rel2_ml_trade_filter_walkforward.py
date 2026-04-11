@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import warnings
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -335,6 +336,9 @@ class Config:
     dynamic_cluster_abs_weight_cap_calm: float = 0.90
     # Smart-breadth controls.
     max_universe_assets: int = 170
+    min_asset_history_days: int = 756
+    max_asset_missing_frac: float = 0.15
+    min_asset_median_dollar_vol: float = 15_000_000.0
     asset_efficacy_horizon_days: int = 21
     asset_efficacy_min_obs: int = 120
     asset_efficacy_quantile: float = 0.55
@@ -375,6 +379,17 @@ class Config:
     market_stop_trigger_days: int = 1
     market_stop_vol_adj_min: float = 0.75
     market_stop_vol_adj_max: float = 1.25
+    market_stop_stage1_drawdown: float = 0.10
+    market_stop_stage2_drawdown: float = 0.14
+    market_stop_stage1_scale: float = 0.50
+    market_stop_stage2_scale: float = 0.20
+    market_stop_state_recovery_drawdown: float = 0.04
+    # Selection optimizer controls.
+    selection_prob_weight: float = 0.55
+    selection_edge_weight: float = 0.35
+    selection_liq_weight: float = 0.10
+    selection_max_per_side: int = 14
+    selection_max_daily: int = 20
     # Global risk-on gate: do not open trades unless SPY 3-month return is positive.
     require_spy_3m_positive: bool = True
 
@@ -448,6 +463,19 @@ class ExperimentSpec:
     market_stop_scale_override: float | None = None
     use_market_stop_vol_adjustment: bool = False
     market_stop_trigger_days_override: int | None = None
+    use_market_stop_state_machine: bool = False
+    market_stop_stage1_drawdown_override: float | None = None
+    market_stop_stage2_drawdown_override: float | None = None
+    market_stop_stage1_scale_override: float | None = None
+    market_stop_stage2_scale_override: float | None = None
+    market_stop_state_recovery_override: float | None = None
+    use_selection_optimizer: bool = False
+    selection_prob_weight_override: float | None = None
+    selection_edge_weight_override: float | None = None
+    selection_liq_weight_override: float | None = None
+    selection_max_per_side_override: int | None = None
+    selection_max_daily_override: int | None = None
+    max_universe_assets_override: int | None = None
 
 
 EXPERIMENTS: tuple[ExperimentSpec, ...] = (
@@ -895,6 +923,81 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         use_soft_cashflow_weighting=True,
         cashflow_soft_floor_override=0.55,
         cashflow_soft_min_scale_override=0.70,
+    ),
+    # Next-lift pack: selection optimizer, stop state machine, expanded universe.
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_next_selection_opt",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        market_stop_drawdown_override=0.12,
+        market_stop_recovery_override=0.05,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_selection_optimizer=True,
+        selection_prob_weight_override=0.60,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_next_stop_machine",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.10,
+        market_stop_drawdown_override=0.12,
+        market_stop_recovery_override=0.05,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_3x_ml_champion_next_expanded_assets",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=3.0,
+        max_abs_weight_per_asset_override=0.12,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_market_stop_loss=True,
+        market_stop_drawdown_override=0.12,
+        market_stop_recovery_override=0.05,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        max_universe_assets_override=260,
     ),
     ExperimentSpec(
         name="smart_breadth_quality_3x_ml_champion_market_stop_11",
@@ -1844,7 +1947,63 @@ def _build_trades(
 
         if not cands:
             continue
-        if exp.use_ml_topk_selector:
+        if exp.use_selection_optimizer:
+            pw = (
+                float(exp.selection_prob_weight_override)
+                if exp.selection_prob_weight_override is not None
+                else float(cfg.selection_prob_weight)
+            )
+            ew = (
+                float(exp.selection_edge_weight_override)
+                if exp.selection_edge_weight_override is not None
+                else float(cfg.selection_edge_weight)
+            )
+            lw = (
+                float(exp.selection_liq_weight_override)
+                if exp.selection_liq_weight_override is not None
+                else float(cfg.selection_liq_weight)
+            )
+            wsum = max(1e-9, pw + ew + lw)
+            pw, ew, lw = pw / wsum, ew / wsum, lw / wsum
+            edge_scale = max(1e-9, float(max(float(c.get("priority", 0.0)) for c in cands)))
+            max_per_side = (
+                int(exp.selection_max_per_side_override)
+                if exp.selection_max_per_side_override is not None
+                else int(cfg.selection_max_per_side)
+            )
+            max_daily = (
+                int(exp.selection_max_daily_override)
+                if exp.selection_max_daily_override is not None
+                else int(cfg.selection_max_daily)
+            )
+            max_per_side = max(1, max_per_side)
+            max_daily = max(1, max_daily)
+            for c in cands:
+                p = float(c.get("trade_filter_prob", float("nan")))
+                if not np.isfinite(p):
+                    p = 0.5
+                e = float(max(0.0, float(c.get("priority", 0.0))) / edge_scale)
+                liq = float(np.clip(float(c["row"]["adv_rank_pct"]), 0.0, 1.0))
+                c["selection_score"] = float(pw * p + ew * e + lw * liq)
+            cands.sort(key=lambda x: float(x.get("selection_score", 0.0)), reverse=True)
+            selected: list[dict[str, object]] = []
+            n_long = 0
+            n_short = 0
+            for c in cands:
+                sign = float(np.sign(float(c.get("trend_sign", 0.0))))
+                if sign > 0.0 and n_long >= max_per_side:
+                    continue
+                if sign < 0.0 and n_short >= max_per_side:
+                    continue
+                selected.append(c)
+                if sign > 0.0:
+                    n_long += 1
+                elif sign < 0.0:
+                    n_short += 1
+                if len(selected) >= max_daily:
+                    break
+            cands = selected if selected else cands[:max_daily]
+        elif exp.use_ml_topk_selector:
             topk = (
                 int(exp.ml_topk_per_day_override)
                 if exp.ml_topk_per_day_override is not None
@@ -2239,46 +2398,86 @@ def _simulate_fold(
                 w = w.clip(-max_abs_weight_local, max_abs_weight_local)
             curr_spy_dd = float(spy_drawdown.iloc[i]) if np.isfinite(spy_drawdown.iloc[i]) else float("nan")
             if exp.use_market_stop_loss:
-                stop_dd = (
-                    float(exp.market_stop_drawdown_override)
-                    if exp.market_stop_drawdown_override is not None
-                    else float(cfg.market_stop_drawdown)
-                )
-                rec_dd = (
-                    float(exp.market_stop_recovery_override)
-                    if exp.market_stop_recovery_override is not None
-                    else float(cfg.market_stop_recovery_drawdown)
-                )
-                stop_scale = (
-                    float(exp.market_stop_scale_override)
-                    if exp.market_stop_scale_override is not None
-                    else float(cfg.market_stop_scale)
-                )
-                trigger_days = (
-                    int(exp.market_stop_trigger_days_override)
-                    if exp.market_stop_trigger_days_override is not None
-                    else int(cfg.market_stop_trigger_days)
-                )
-                stop_dd = float(max(1e-6, stop_dd))
-                if exp.use_market_stop_vol_adjustment and np.isfinite(curr_spy_vol) and np.isfinite(train_spy_vol_median):
-                    vol_ratio = float(train_spy_vol_median / max(1e-8, curr_spy_vol))
-                    vol_adj = float(np.clip(vol_ratio, cfg.market_stop_vol_adj_min, cfg.market_stop_vol_adj_max))
-                    stop_dd = float(stop_dd * vol_adj)
-                    rec_dd = float(rec_dd * vol_adj)
-                rec_dd = float(np.clip(rec_dd, 0.0, stop_dd))
-                trigger_days = max(1, trigger_days)
-                if not market_stop_active:
-                    if np.isfinite(curr_spy_dd) and curr_spy_dd <= -stop_dd:
-                        market_stop_breach_count += 1
-                    else:
+                if exp.use_market_stop_state_machine:
+                    stage1_dd = (
+                        float(exp.market_stop_stage1_drawdown_override)
+                        if exp.market_stop_stage1_drawdown_override is not None
+                        else float(cfg.market_stop_stage1_drawdown)
+                    )
+                    stage2_dd = (
+                        float(exp.market_stop_stage2_drawdown_override)
+                        if exp.market_stop_stage2_drawdown_override is not None
+                        else float(cfg.market_stop_stage2_drawdown)
+                    )
+                    stage1_scale = (
+                        float(exp.market_stop_stage1_scale_override)
+                        if exp.market_stop_stage1_scale_override is not None
+                        else float(cfg.market_stop_stage1_scale)
+                    )
+                    stage2_scale = (
+                        float(exp.market_stop_stage2_scale_override)
+                        if exp.market_stop_stage2_scale_override is not None
+                        else float(cfg.market_stop_stage2_scale)
+                    )
+                    state_rec_dd = (
+                        float(exp.market_stop_state_recovery_override)
+                        if exp.market_stop_state_recovery_override is not None
+                        else float(cfg.market_stop_state_recovery_drawdown)
+                    )
+                    stage1_dd = float(max(1e-6, stage1_dd))
+                    stage2_dd = float(max(stage1_dd + 1e-6, stage2_dd))
+                    state_rec_dd = float(np.clip(state_rec_dd, 0.0, stage1_dd))
+                    stage_scale = 1.0
+                    if np.isfinite(curr_spy_dd):
+                        if curr_spy_dd <= -stage2_dd:
+                            stage_scale = float(np.clip(stage2_scale, 0.0, 1.0))
+                        elif curr_spy_dd <= -stage1_dd:
+                            stage_scale = float(np.clip(stage1_scale, 0.0, 1.0))
+                        elif curr_spy_dd >= -state_rec_dd:
+                            stage_scale = 1.0
+                    w = w * float(np.clip(stage_scale, 0.0, 1.0))
+                    market_stop_active = stage_scale < 0.999
+                else:
+                    stop_dd = (
+                        float(exp.market_stop_drawdown_override)
+                        if exp.market_stop_drawdown_override is not None
+                        else float(cfg.market_stop_drawdown)
+                    )
+                    rec_dd = (
+                        float(exp.market_stop_recovery_override)
+                        if exp.market_stop_recovery_override is not None
+                        else float(cfg.market_stop_recovery_drawdown)
+                    )
+                    stop_scale = (
+                        float(exp.market_stop_scale_override)
+                        if exp.market_stop_scale_override is not None
+                        else float(cfg.market_stop_scale)
+                    )
+                    trigger_days = (
+                        int(exp.market_stop_trigger_days_override)
+                        if exp.market_stop_trigger_days_override is not None
+                        else int(cfg.market_stop_trigger_days)
+                    )
+                    stop_dd = float(max(1e-6, stop_dd))
+                    if exp.use_market_stop_vol_adjustment and np.isfinite(curr_spy_vol) and np.isfinite(train_spy_vol_median):
+                        vol_ratio = float(train_spy_vol_median / max(1e-8, curr_spy_vol))
+                        vol_adj = float(np.clip(vol_ratio, cfg.market_stop_vol_adj_min, cfg.market_stop_vol_adj_max))
+                        stop_dd = float(stop_dd * vol_adj)
+                        rec_dd = float(rec_dd * vol_adj)
+                    rec_dd = float(np.clip(rec_dd, 0.0, stop_dd))
+                    trigger_days = max(1, trigger_days)
+                    if not market_stop_active:
+                        if np.isfinite(curr_spy_dd) and curr_spy_dd <= -stop_dd:
+                            market_stop_breach_count += 1
+                        else:
+                            market_stop_breach_count = 0
+                        if market_stop_breach_count >= trigger_days:
+                            market_stop_active = True
+                    elif market_stop_active and np.isfinite(curr_spy_dd) and curr_spy_dd >= -rec_dd:
+                        market_stop_active = False
                         market_stop_breach_count = 0
-                    if market_stop_breach_count >= trigger_days:
-                        market_stop_active = True
-                elif market_stop_active and np.isfinite(curr_spy_dd) and curr_spy_dd >= -rec_dd:
-                    market_stop_active = False
-                    market_stop_breach_count = 0
-                if market_stop_active:
-                    w = w * float(np.clip(stop_scale, 0.0, 1.0))
+                    if market_stop_active:
+                        w = w * float(np.clip(stop_scale, 0.0, 1.0))
 
             gross = float(np.dot(w.values, rets.iloc[i].reindex(assets).fillna(0.0).values))
             turnover = float(np.abs(w - prev_w).sum())
@@ -2474,6 +2673,156 @@ def _portfolio_metrics(daily: pd.DataFrame, trades: pd.DataFrame) -> dict[str, f
     }
 
 
+def _quality_filtered_assets(raw_bars: pd.DataFrame, cfg: Config) -> list[str]:
+    """Return quality-gated assets based on history continuity and tradability."""
+    if raw_bars.empty:
+        return []
+    b = raw_bars.copy()
+    b["timestamp"] = pd.to_datetime(b["timestamp"], utc=True, errors="coerce")
+    b["asset"] = b["asset"].astype(str)
+    b["close"] = pd.to_numeric(b["close"], errors="coerce")
+    b["volume"] = pd.to_numeric(b.get("volume"), errors="coerce")
+    b = b.dropna(subset=["timestamp", "asset", "close"])
+    b = b[b["close"] > 0.0].copy()
+    if b.empty:
+        return []
+    n_total_dates = max(1, int(b["timestamp"].nunique()))
+    b["dollar_vol"] = b["close"] * b["volume"].fillna(0.0)
+    g = b.groupby("asset", as_index=False).agg(
+        n_obs=("close", "count"),
+        ts_min=("timestamp", "min"),
+        ts_max=("timestamp", "max"),
+        median_dollar_vol=("dollar_vol", "median"),
+    )
+    g["history_days"] = (g["ts_max"] - g["ts_min"]).dt.days.astype(float)
+    g["missing_frac"] = 1.0 - (g["n_obs"] / float(n_total_dates))
+    keep = g[
+        (g["history_days"] >= float(cfg.min_asset_history_days))
+        & (g["missing_frac"] <= float(cfg.max_asset_missing_frac))
+        & (g["median_dollar_vol"] >= float(cfg.min_asset_median_dollar_vol))
+    ]["asset"].astype(str)
+    keep_assets = keep.dropna().tolist()
+    if keep_assets:
+        return sorted(set(keep_assets))
+    return sorted(set(b["asset"].astype(str).tolist()))
+
+
+def _build_test_panel_for_experiment(
+    *,
+    exp: ExperimentSpec,
+    cfg: Config,
+    vendor: YahooMarketDataVendor,
+    bars_default: pd.DataFrame,
+    spy_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, int]]:
+    """Build per-experiment panel, optionally using expanded + quality-gated universe."""
+    if exp.max_universe_assets_override is None:
+        panel = _build_panel(bars_default, spy_df, cfg)
+        meta = {"requested": len(bars_default["asset"].astype(str).unique()) if not bars_default.empty else 0, "quality": 0}
+        return panel, meta
+
+    max_assets = max(1, int(exp.max_universe_assets_override))
+    expanded_universe = _load_broad_us_universe(max_assets=max_assets)
+    bars_expanded = vendor.fetch_bars(list(expanded_universe), period=cfg.period, interval=cfg.interval)
+    if bars_expanded.empty:
+        panel = _build_panel(bars_default, spy_df, cfg)
+        return panel, {"requested": len(expanded_universe), "quality": 0}
+    keep_assets = _quality_filtered_assets(bars_expanded, cfg)
+    bars_use = bars_expanded[bars_expanded["asset"].astype(str).isin(set(keep_assets))].copy() if keep_assets else bars_expanded
+    panel = _build_panel(bars_use, spy_df, cfg)
+    return panel, {"requested": len(expanded_universe), "quality": len(keep_assets)}
+
+
+def _run_single_experiment(
+    *,
+    exp: ExperimentSpec,
+    panel_exp: pd.DataFrame,
+    panel_meta: dict[str, int],
+    cfg: Config,
+    spy_df: pd.DataFrame,
+    all_daily_by_strategy: dict[str, list[pd.DataFrame]],
+    all_trades_by_strategy: dict[str, list[pd.DataFrame]],
+    fold_rows: list[dict[str, float | str]],
+) -> None:
+    years = sorted(panel_exp["year"].dropna().unique().tolist())
+    if len(years) <= cfg.min_train_years:
+        return
+    for test_year in years[cfg.min_train_years :]:
+        fold_id = f"fold_{int(test_year)}"
+        train = panel_exp[panel_exp["year"] < test_year].copy()
+        test = panel_exp[panel_exp["year"] == test_year].copy()
+        if train.empty or test.empty:
+            continue
+        train_spy_vol_median = float(train["spy_vol_21"].median())
+        cluster_map = _build_corr_clusters(train, corr_threshold=cfg.cluster_corr_threshold)
+        eff_q = (
+            float(exp.asset_efficacy_quantile_override)
+            if exp.asset_efficacy_quantile_override is not None
+            else cfg.asset_efficacy_quantile
+        )
+        asset_efficacy_map, asset_efficacy_thr = _compute_asset_efficacy(
+            train_panel=train,
+            horizon_days=cfg.asset_efficacy_horizon_days,
+            min_obs=cfg.asset_efficacy_min_obs,
+            quantile_threshold=eff_q,
+        )
+        conf_cal_slope, conf_cal_intercept = (0.0, 0.0)
+        if exp.use_confidence_calibration:
+            conf_cal_slope, conf_cal_intercept = _build_confidence_calibrator(train)
+        trade_filter_model, trade_filter_threshold = (None, None)
+        if exp.use_trade_filter_model:
+            trade_filter_model, trade_filter_threshold = _fit_trade_filter_model(
+                train_panel=train,
+                cfg=cfg,
+                exp=exp,
+                train_spy_vol_median=train_spy_vol_median,
+                asset_efficacy_map=asset_efficacy_map,
+                asset_efficacy_threshold=asset_efficacy_thr,
+                conf_cal_slope=conf_cal_slope,
+                conf_cal_intercept=conf_cal_intercept,
+            )
+        trades = _build_trades(
+            test_panel=test,
+            cfg=cfg,
+            exp=exp,
+            fold_id=fold_id,
+            train_spy_vol_median=train_spy_vol_median,
+            asset_efficacy_map=asset_efficacy_map,
+            asset_efficacy_threshold=asset_efficacy_thr,
+            conf_cal_slope=conf_cal_slope,
+            conf_cal_intercept=conf_cal_intercept,
+            trade_filter_model=trade_filter_model,
+            trade_filter_threshold=trade_filter_threshold,
+        )
+        daily, trades_eval = _simulate_fold(
+            test_panel=test,
+            trades=trades,
+            spy_df=spy_df,
+            cfg=cfg,
+            fold_id=fold_id,
+            strategy_name=exp.name,
+            exp=exp,
+            train_spy_vol_median=train_spy_vol_median,
+            cluster_map=cluster_map,
+        )
+        if daily.empty:
+            continue
+        all_daily_by_strategy[exp.name].append(daily)
+        all_trades_by_strategy[exp.name].append(trades_eval)
+        fold_rows.append(
+            {
+                "strategy": exp.name,
+                "fold_id": fold_id,
+                "test_year": int(test_year),
+                "train_years": int(train["year"].nunique()),
+                "assets_in_test": int(test["asset"].nunique()),
+                "expanded_universe_requested": int(panel_meta.get("requested", 0)),
+                "expanded_universe_after_quality": int(panel_meta.get("quality", 0)),
+                **_portfolio_metrics(daily, trades_eval),
+            }
+        )
+
+
 def main() -> None:
     out_root = Path("trading_research/examples/_output/46_rel2_ml_trade_filter_walkforward")
     reports_dir = out_root / "reports"
@@ -2487,101 +2836,40 @@ def main() -> None:
     if bars.empty or spy_df.empty:
         raise ValueError("Missing Yahoo data for requested universe or SPY benchmark.")
 
-    panel = _build_panel(bars, spy_df, cfg)
-    years = sorted(panel["year"].dropna().unique().tolist())
-    if len(years) <= cfg.min_train_years:
-        raise ValueError("Insufficient years for anchored walk-forward.")
-
     strategy_names = [e.name for e in EXPERIMENTS] + ["buy_hold_all"]
     all_daily_by_strategy: dict[str, list[pd.DataFrame]] = {n: [] for n in strategy_names}
     all_trades_by_strategy: dict[str, list[pd.DataFrame]] = {n: [] for n in strategy_names}
     fold_rows: list[dict[str, float | str]] = []
+    panel_default = _build_panel(bars, spy_df, cfg)
+    years_default = sorted(panel_default["year"].dropna().unique().tolist())
+    if len(years_default) <= cfg.min_train_years:
+        raise ValueError("Insufficient years for anchored walk-forward.")
 
-    for test_year in years[cfg.min_train_years :]:
-        fold_id = f"fold_{int(test_year)}"
-        train = panel[panel["year"] < test_year].copy()
-        test = panel[panel["year"] == test_year].copy()
-        if train.empty or test.empty:
-            continue
-        train_spy_vol_median = float(train["spy_vol_21"].median())
-        cluster_map = _build_corr_clusters(train, corr_threshold=cfg.cluster_corr_threshold)
-        base_efficacy_map, base_efficacy_thr = _compute_asset_efficacy(
-            train_panel=train,
-            horizon_days=cfg.asset_efficacy_horizon_days,
-            min_obs=cfg.asset_efficacy_min_obs,
-            quantile_threshold=cfg.asset_efficacy_quantile,
+    for exp in EXPERIMENTS:
+        panel_exp, panel_meta = _build_test_panel_for_experiment(
+            exp=exp,
+            cfg=cfg,
+            vendor=vendor,
+            bars_default=bars,
+            spy_df=spy_df,
+        )
+        _run_single_experiment(
+            exp=exp,
+            panel_exp=panel_exp,
+            panel_meta=panel_meta,
+            cfg=cfg,
+            spy_df=spy_df,
+            all_daily_by_strategy=all_daily_by_strategy,
+            all_trades_by_strategy=all_trades_by_strategy,
+            fold_rows=fold_rows,
         )
 
-        for exp in EXPERIMENTS:
-            eff_q = (
-                float(exp.asset_efficacy_quantile_override)
-                if exp.asset_efficacy_quantile_override is not None
-                else cfg.asset_efficacy_quantile
-            )
-            if exp.use_asset_efficacy_filter and exp.asset_efficacy_quantile_override is not None:
-                asset_efficacy_map, asset_efficacy_thr = _compute_asset_efficacy(
-                    train_panel=train,
-                    horizon_days=cfg.asset_efficacy_horizon_days,
-                    min_obs=cfg.asset_efficacy_min_obs,
-                    quantile_threshold=eff_q,
-                )
-            else:
-                asset_efficacy_map, asset_efficacy_thr = base_efficacy_map, base_efficacy_thr
-            conf_cal_slope, conf_cal_intercept = (0.0, 0.0)
-            if exp.use_confidence_calibration:
-                conf_cal_slope, conf_cal_intercept = _build_confidence_calibrator(train)
-            trade_filter_model, trade_filter_threshold = (None, None)
-            if exp.use_trade_filter_model:
-                trade_filter_model, trade_filter_threshold = _fit_trade_filter_model(
-                    train_panel=train,
-                    cfg=cfg,
-                    exp=exp,
-                    train_spy_vol_median=train_spy_vol_median,
-                    asset_efficacy_map=asset_efficacy_map,
-                    asset_efficacy_threshold=asset_efficacy_thr,
-                    conf_cal_slope=conf_cal_slope,
-                    conf_cal_intercept=conf_cal_intercept,
-                )
-            trades = _build_trades(
-                test_panel=test,
-                cfg=cfg,
-                exp=exp,
-                fold_id=fold_id,
-                train_spy_vol_median=train_spy_vol_median,
-                asset_efficacy_map=asset_efficacy_map,
-                asset_efficacy_threshold=asset_efficacy_thr,
-                conf_cal_slope=conf_cal_slope,
-                conf_cal_intercept=conf_cal_intercept,
-                trade_filter_model=trade_filter_model,
-                trade_filter_threshold=trade_filter_threshold,
-            )
-            daily, trades_eval = _simulate_fold(
-                test_panel=test,
-                trades=trades,
-                spy_df=spy_df,
-                cfg=cfg,
-                fold_id=fold_id,
-                strategy_name=exp.name,
-                exp=exp,
-                train_spy_vol_median=train_spy_vol_median,
-                cluster_map=cluster_map,
-            )
-            if daily.empty:
-                continue
-            all_daily_by_strategy[exp.name].append(daily)
-            all_trades_by_strategy[exp.name].append(trades_eval)
-            fold_rows.append(
-                {
-                    "strategy": exp.name,
-                    "fold_id": fold_id,
-                    "test_year": int(test_year),
-                    "train_years": int(train["year"].nunique()),
-                    "assets_in_test": int(test["asset"].nunique()),
-                    **_portfolio_metrics(daily, trades_eval),
-                }
-            )
-
-        bh_daily = _simulate_buy_hold_all_fold(test_panel=test, spy_df=spy_df, cfg=cfg, fold_id=fold_id)
+    for test_year in years_default[cfg.min_train_years :]:
+        fold_id = f"fold_{int(test_year)}"
+        test_bh = panel_default[panel_default["year"] == test_year].copy()
+        if test_bh.empty:
+            continue
+        bh_daily = _simulate_buy_hold_all_fold(test_panel=test_bh, spy_df=spy_df, cfg=cfg, fold_id=fold_id)
         if not bh_daily.empty:
             all_daily_by_strategy["buy_hold_all"].append(bh_daily)
             all_trades_by_strategy["buy_hold_all"].append(pd.DataFrame())
@@ -2590,8 +2878,10 @@ def main() -> None:
                     "strategy": "buy_hold_all",
                     "fold_id": fold_id,
                     "test_year": int(test_year),
-                    "train_years": int(train["year"].nunique()),
-                    "assets_in_test": int(test["asset"].nunique()),
+                    "train_years": int(max(0, int(test_year) - int(min(years_default)))),
+                    "assets_in_test": int(test_bh["asset"].nunique()),
+                    "expanded_universe_requested": int(len(requested_universe)),
+                    "expanded_universe_after_quality": 0,
                     **_portfolio_metrics(bh_daily, pd.DataFrame()),
                 }
             )
@@ -2670,9 +2960,9 @@ def main() -> None:
 
     summary = {
         "universe_size_requested": len(requested_universe),
-        "universe_size_fetched": int(panel["asset"].nunique()) if not panel.empty else 0,
-        "history_start": str(panel["timestamp"].min()) if not panel.empty else None,
-        "history_end": str(panel["timestamp"].max()) if not panel.empty else None,
+        "universe_size_fetched": int(panel_default["asset"].nunique()) if not panel_default.empty else 0,
+        "history_start": str(panel_default["timestamp"].min()) if not panel_default.empty else None,
+        "history_end": str(panel_default["timestamp"].max()) if not panel_default.empty else None,
         "n_walkforward_folds": int(fold_df["fold_id"].nunique()) if not fold_df.empty else 0,
         "config": {
             "period": cfg.period,
