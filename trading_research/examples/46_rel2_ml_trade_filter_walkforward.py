@@ -22,9 +22,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 try:
-    from sklearn.ensemble import HistGradientBoostingClassifier
+    from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 except Exception:  # pragma: no cover - optional dependency at runtime.
     HistGradientBoostingClassifier = None  # type: ignore[assignment]
+    HistGradientBoostingRegressor = None  # type: ignore[assignment]
 
 from trading_research.data.vendors.yahoo import YahooMarketDataVendor
 
@@ -371,6 +372,24 @@ class Config:
     trade_filter_regime_stress_threshold_shift: float = 0.03
     trade_filter_regime_calm_threshold_shift: float = -0.01
     trade_filter_regime_stress_drawdown: float = -0.08
+    trade_filter_regime_min_train_samples: int = 80
+    trade_filter_regime_stress_vol_mult: float = 1.05
+    trade_filter_regime_calm_vol_mult: float = 0.90
+    trade_filter_regime_calm_trend_gap: float = 0.01
+    trade_ev_risk_lambda: float = 0.60
+    trade_ev_min_score: float = -0.002
+    trade_ev_score_scale: float = 20.0
+    exit_intel_min_train_trades: int = 140
+    exit_intel_cont_pos_ret: float = 0.04
+    exit_intel_risk_neg_ret: float = -0.03
+    exit_intel_extend_days: int = 14
+    exit_intel_cut_hold_frac: float = 0.60
+    exit_intel_cont_threshold: float = 0.58
+    exit_intel_risk_threshold: float = 0.56
+    exit_intel_trigger_relax_mult: float = 1.15
+    exit_intel_trail_relax_mult: float = 1.12
+    exit_intel_trigger_tighten_mult: float = 0.85
+    exit_intel_trail_tighten_mult: float = 0.78
     # Universe restriction by cross-sectional cashflow proxy (21d dollar volume rank).
     cashflow_quartile_rank_threshold: float = 0.75
     cashflow_soft_rank_floor: float = 0.55
@@ -493,6 +512,13 @@ class ExperimentSpec:
     use_trade_filter_recency_weighting: bool = False
     use_trade_filter_adaptive_threshold: bool = False
     use_regime_conditioned_ml_threshold: bool = False
+    use_trade_filter_ev_regression: bool = False
+    trade_ev_risk_lambda_override: float | None = None
+    trade_ev_min_score_override: float | None = None
+    use_trade_filter_regime_specialists: bool = False
+    use_exit_intelligence: bool = False
+    exit_intel_cont_threshold_override: float | None = None
+    exit_intel_risk_threshold_override: float | None = None
     # Additional robustness variants requested by user.
     use_cashflow_quartile_restrictor: bool = False
     cashflow_quartile_threshold_override: float | None = None
@@ -1228,6 +1254,112 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         selection_liq_weight_override=0.05,
         selection_max_per_side_override=12,
         selection_max_daily_override=16,
+        use_market_stop_loss=True,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_bear_short_sleeve=True,
+        sleeve_bear_short_spy_dd_threshold_override=-0.06,
+        sleeve_bear_short_vol_mult_override=0.95,
+        sleeve_bear_short_rel_quantile_override=0.25,
+        sleeve_bear_short_max_names_override=22,
+        sleeve_bear_short_gross_override=0.65,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_2x_exp1_ev_ranker",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=2.0,
+        max_abs_weight_per_asset_override=0.11,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.78,
+        trade_filter_prob_quantile_override=0.56,
+        use_trade_filter_ev_regression=True,
+        trade_ev_risk_lambda_override=0.55,
+        trade_ev_min_score_override=-0.0015,
+        use_market_stop_loss=True,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_bear_short_sleeve=True,
+        sleeve_bear_short_spy_dd_threshold_override=-0.06,
+        sleeve_bear_short_vol_mult_override=0.95,
+        sleeve_bear_short_rel_quantile_override=0.25,
+        sleeve_bear_short_max_names_override=22,
+        sleeve_bear_short_gross_override=0.65,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_2x_exp2_regime_specialists",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=2.0,
+        max_abs_weight_per_asset_override=0.11,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.80,
+        trade_filter_prob_quantile_override=0.57,
+        use_trade_filter_regime_specialists=True,
+        use_market_stop_loss=True,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_bear_short_sleeve=True,
+        sleeve_bear_short_spy_dd_threshold_override=-0.06,
+        sleeve_bear_short_vol_mult_override=0.95,
+        sleeve_bear_short_rel_quantile_override=0.25,
+        sleeve_bear_short_max_names_override=22,
+        sleeve_bear_short_gross_override=0.65,
+    ),
+    ExperimentSpec(
+        name="smart_breadth_quality_2x_exp3_exit_intelligence",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=2.0,
+        max_abs_weight_per_asset_override=0.11,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.82,
+        trade_filter_prob_quantile_override=0.57,
+        use_exit_intelligence=True,
+        exit_intel_cont_threshold_override=0.57,
+        exit_intel_risk_threshold_override=0.57,
         use_market_stop_loss=True,
         use_soft_cashflow_weighting=True,
         cashflow_soft_floor_override=0.55,
@@ -2471,7 +2603,7 @@ def _select_trade_filter_threshold(
     return float(best_thr)
 
 
-def _fit_trade_filter_model(
+def _build_trade_filter_training_dataset(
     *,
     train_panel: pd.DataFrame,
     cfg: Config,
@@ -2481,12 +2613,15 @@ def _fit_trade_filter_model(
     asset_efficacy_threshold: float | None,
     conf_cal_slope: float,
     conf_cal_intercept: float,
-) -> tuple[HistGradientBoostingClassifier | None, float | None]:
-    if HistGradientBoostingClassifier is None:
-        return None, None
-    if train_panel.empty:
-        return None, None
-    train_exp = replace(exp, use_trade_filter_model=False)
+) -> tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+    """Build training matrix/targets from train-fold pseudo-trades only."""
+    train_exp = replace(
+        exp,
+        use_trade_filter_model=False,
+        use_trade_filter_regime_specialists=False,
+        use_trade_filter_ev_regression=False,
+        use_exit_intelligence=False,
+    )
     train_trades = _build_trades(
         test_panel=train_panel,
         cfg=cfg,
@@ -2499,7 +2634,7 @@ def _fit_trade_filter_model(
         conf_cal_intercept=conf_cal_intercept,
     )
     if train_trades.empty or len(train_trades) < int(cfg.trade_filter_min_train_trades):
-        return None, None
+        return pd.DataFrame(), np.asarray([], dtype=int), np.asarray([], dtype=float)
 
     panel = train_panel.copy()
     panel["timestamp"] = pd.to_datetime(panel["timestamp"], utc=True, errors="coerce")
@@ -2507,13 +2642,11 @@ def _fit_trade_filter_model(
     lookup = panel.set_index(["timestamp", "asset"], drop=False)
     close = panel.pivot(index="timestamp", columns="asset", values="close").sort_index().ffill()
     dates = close.index.to_list()
-
     one_way = _one_way_cost_return(cfg)
+
     x_rows: list[dict[str, float]] = []
     y_rows: list[int] = []
     net_ret_rows: list[float] = []
-    edge_rows: list[float] = []
-    signal_ts_rows: list[pd.Timestamp] = []
     for _, tr in train_trades.iterrows():
         asset = str(tr["asset"])
         try:
@@ -2553,36 +2686,199 @@ def _fit_trade_filter_model(
         )
         y_rows.append(1 if net_ret > 0.0 else 0)
         net_ret_rows.append(float(net_ret))
-        edge_rows.append(float(edge_proxy))
-        signal_ts_rows.append(pd.Timestamp(signal_ts))
 
     if len(x_rows) < int(cfg.trade_filter_min_train_trades):
-        return None, None
-    y = np.asarray(y_rows, dtype=int)
-    if len(np.unique(y)) < 2:
-        return None, None
+        return pd.DataFrame(), np.asarray([], dtype=int), np.asarray([], dtype=float)
 
     x = pd.DataFrame(x_rows)
     for c in TRADE_FILTER_FEATURES:
         x[c] = pd.to_numeric(x[c], errors="coerce")
     x = x.replace([np.inf, -np.inf], np.nan).dropna()
     if x.empty:
-        return None, None
+        return pd.DataFrame(), np.asarray([], dtype=int), np.asarray([], dtype=float)
     keep_idx = x.index.to_numpy(dtype=int)
-    y = y[keep_idx]
+    y = np.asarray(y_rows, dtype=int)[keep_idx]
     net_ret_arr = np.asarray(net_ret_rows, dtype=float)[keep_idx]
-    edge_arr = np.asarray(edge_rows, dtype=float)[keep_idx]
-    ts_arr = pd.to_datetime(pd.Series(signal_ts_rows), utc=True, errors="coerce").iloc[keep_idx].reset_index(drop=True)
+    return x.reset_index(drop=True), y, net_ret_arr
+
+
+def _trade_filter_regime_label(
+    feat_row: pd.Series,
+    *,
+    cfg: Config,
+    train_spy_vol_median: float,
+) -> str:
+    spy_up = float(pd.to_numeric(feat_row.get("spy_up", 0.0), errors="coerce"))
+    spy_vol = float(pd.to_numeric(feat_row.get("spy_vol_21", np.nan), errors="coerce"))
+    spy_dd = float(pd.to_numeric(feat_row.get("spy_drawdown_252", np.nan), errors="coerce"))
+    spy_trend_gap = float(pd.to_numeric(feat_row.get("spy_trend_gap", 0.0), errors="coerce"))
+    stress = (spy_up <= 0.5) or (
+        np.isfinite(spy_vol)
+        and np.isfinite(train_spy_vol_median)
+        and spy_vol >= float(cfg.trade_filter_regime_stress_vol_mult) * train_spy_vol_median
+    ) or (np.isfinite(spy_dd) and spy_dd <= float(cfg.trade_filter_regime_stress_drawdown))
+    calm = (spy_up > 0.5) and (
+        np.isfinite(spy_vol)
+        and np.isfinite(train_spy_vol_median)
+        and spy_vol <= float(cfg.trade_filter_regime_calm_vol_mult) * train_spy_vol_median
+    ) and (abs(spy_trend_gap) >= float(cfg.trade_filter_regime_calm_trend_gap))
+    if stress:
+        return "stress"
+    if calm:
+        return "trend_calm"
+    return "chop"
+
+
+def _fit_trade_filter_ev_models(
+    *,
+    x: pd.DataFrame,
+    net_ret_arr: np.ndarray,
+    cfg: Config,
+) -> tuple[HistGradientBoostingRegressor | None, HistGradientBoostingRegressor | None]:
+    if HistGradientBoostingRegressor is None or x.empty or len(net_ret_arr) != len(x):
+        return None, None
+    if len(x) < int(cfg.trade_filter_min_train_trades):
+        return None, None
+    feature_cols = list(TRADE_FILTER_FEATURES)
+    mu_model = HistGradientBoostingRegressor(
+        learning_rate=0.035,
+        max_depth=5,
+        max_iter=380,
+        min_samples_leaf=24,
+        l2_regularization=0.03,
+        random_state=41,
+    )
+    risk_model = HistGradientBoostingRegressor(
+        learning_rate=0.035,
+        max_depth=4,
+        max_iter=320,
+        min_samples_leaf=20,
+        l2_regularization=0.03,
+        random_state=43,
+    )
+    mu_model.fit(x[feature_cols], net_ret_arr)
+    downside = np.clip(-np.asarray(net_ret_arr, dtype=float), 0.0, None)
+    risk_model.fit(x[feature_cols], downside)
+    return mu_model, risk_model
+
+
+def _fit_trade_filter_regime_specialists(
+    *,
+    x: pd.DataFrame,
+    y: np.ndarray,
+    net_ret_arr: np.ndarray,
+    cfg: Config,
+    train_spy_vol_median: float,
+) -> tuple[dict[str, HistGradientBoostingClassifier], dict[str, float]]:
+    models: dict[str, HistGradientBoostingClassifier] = {}
+    thresholds: dict[str, float] = {}
+    if HistGradientBoostingClassifier is None or x.empty or len(y) != len(x):
+        return models, thresholds
+    x_local = x.reset_index(drop=True).copy()
+    x_local["__regime__"] = x_local.apply(
+        lambda r: _trade_filter_regime_label(r, cfg=cfg, train_spy_vol_median=train_spy_vol_median),
+        axis=1,
+    )
+    for regime in ("trend_calm", "stress", "chop"):
+        xr = x_local[x_local["__regime__"] == regime].drop(columns=["__regime__"], errors="ignore")
+        if xr.empty:
+            continue
+        idx = xr.index.to_numpy(dtype=int)
+        if len(idx) < int(cfg.trade_filter_regime_min_train_samples):
+            continue
+        yr = y[idx]
+        if len(np.unique(yr)) < 2:
+            continue
+        model = HistGradientBoostingClassifier(
+            learning_rate=0.035,
+            max_depth=5,
+            max_iter=320,
+            min_samples_leaf=20,
+            l2_regularization=0.04,
+            random_state=42,
+        )
+        feature_cols = list(TRADE_FILTER_FEATURES)
+        model.fit(xr[feature_cols], yr)
+        prob = model.predict_proba(xr[feature_cols])[:, 1]
+        thr = _select_trade_filter_threshold(
+            prob=np.asarray(prob, dtype=float),
+            net_ret=np.asarray(net_ret_arr, dtype=float)[idx],
+            cfg=cfg,
+            q=float(cfg.trade_filter_prob_quantile),
+            use_adaptive=True,
+        )
+        models[regime] = model
+        thresholds[regime] = float(thr if np.isfinite(thr) else 0.50)
+    return models, thresholds
+
+
+def _fit_exit_intelligence_models(
+    *,
+    x: pd.DataFrame,
+    net_ret_arr: np.ndarray,
+    cfg: Config,
+) -> tuple[HistGradientBoostingClassifier | None, HistGradientBoostingClassifier | None]:
+    if HistGradientBoostingClassifier is None or x.empty or len(net_ret_arr) != len(x):
+        return None, None
+    if len(x) < int(cfg.exit_intel_min_train_trades):
+        return None, None
+    cont_y = (net_ret_arr >= float(cfg.exit_intel_cont_pos_ret)).astype(int)
+    risk_y = (net_ret_arr <= float(cfg.exit_intel_risk_neg_ret)).astype(int)
+    if len(np.unique(cont_y)) < 2 or len(np.unique(risk_y)) < 2:
+        return None, None
+    feature_cols = list(TRADE_FILTER_FEATURES)
+    cont_model = HistGradientBoostingClassifier(
+        learning_rate=0.035,
+        max_depth=5,
+        max_iter=260,
+        min_samples_leaf=20,
+        l2_regularization=0.03,
+        random_state=52,
+    )
+    risk_model = HistGradientBoostingClassifier(
+        learning_rate=0.035,
+        max_depth=5,
+        max_iter=260,
+        min_samples_leaf=20,
+        l2_regularization=0.03,
+        random_state=53,
+    )
+    cont_model.fit(x[feature_cols], cont_y)
+    risk_model.fit(x[feature_cols], risk_y)
+    return cont_model, risk_model
+
+
+def _fit_trade_filter_model(
+    *,
+    train_panel: pd.DataFrame,
+    cfg: Config,
+    exp: ExperimentSpec,
+    train_spy_vol_median: float,
+    asset_efficacy_map: dict[str, float],
+    asset_efficacy_threshold: float | None,
+    conf_cal_slope: float,
+    conf_cal_intercept: float,
+) -> tuple[HistGradientBoostingClassifier | None, float | None]:
+    if HistGradientBoostingClassifier is None or train_panel.empty:
+        return None, None
+    x, y, net_ret_arr = _build_trade_filter_training_dataset(
+        train_panel=train_panel,
+        cfg=cfg,
+        exp=exp,
+        train_spy_vol_median=train_spy_vol_median,
+        asset_efficacy_map=asset_efficacy_map,
+        asset_efficacy_threshold=asset_efficacy_threshold,
+        conf_cal_slope=conf_cal_slope,
+        conf_cal_intercept=conf_cal_intercept,
+    )
+    if x.empty or len(y) < int(cfg.trade_filter_min_train_trades) or len(np.unique(y)) < 2:
+        return None, None
+    edge_arr = np.asarray(pd.to_numeric(x["edge_proxy"], errors="coerce").fillna(0.0), dtype=float)
+    ts_arr = pd.to_datetime(pd.to_numeric(x.get("spy_ret_126"), errors="coerce"), errors="coerce")
 
     sample_weight = np.ones(len(y), dtype=float)
     if exp.use_trade_filter_recency_weighting and len(y) > 0:
         age_days = np.zeros(len(y), dtype=float)
-        if not ts_arr.empty and ts_arr.notna().any():
-            latest_ts = ts_arr.max()
-            age_days = (
-                (latest_ts - ts_arr).dt.total_seconds().fillna(0.0).to_numpy(dtype=float) / 86400.0
-            )
-            age_days = np.clip(age_days, 0.0, None)
         rec_half = max(1.0, float(cfg.trade_filter_recency_half_life_days))
         recency_w = np.power(0.5, age_days / rec_half)
         edge_abs = np.abs(edge_arr)
@@ -2635,6 +2931,12 @@ def _build_trades(
     conf_cal_intercept: float = 0.0,
     trade_filter_model: HistGradientBoostingClassifier | None = None,
     trade_filter_threshold: float | None = None,
+    trade_filter_regime_models: dict[str, HistGradientBoostingClassifier] | None = None,
+    trade_filter_regime_thresholds: dict[str, float] | None = None,
+    trade_ev_mu_model: HistGradientBoostingRegressor | None = None,
+    trade_ev_risk_model: HistGradientBoostingRegressor | None = None,
+    exit_intel_cont_model: HistGradientBoostingClassifier | None = None,
+    exit_intel_risk_model: HistGradientBoostingClassifier | None = None,
 ) -> pd.DataFrame:
     close_wide = test_panel.pivot(index="timestamp", columns="asset", values="close").sort_index().ffill()
     all_dates = close_wide.index.to_list()
@@ -2810,12 +3112,28 @@ def _build_trades(
                 if edge_proxy < req:
                     continue
             prob_keep = float("nan")
-            if trade_filter_model is not None and trade_filter_threshold is not None:
-                feat = pd.DataFrame([trade_feature], columns=list(TRADE_FILTER_FEATURES))
-                prob_keep = float(trade_filter_model.predict_proba(feat)[0, 1])
+            threshold_used = float("nan")
+            regime_label = ""
+            feat = pd.DataFrame([trade_feature], columns=list(TRADE_FILTER_FEATURES))
+            local_model = trade_filter_model
+            local_threshold = trade_filter_threshold
+            if exp.use_trade_filter_regime_specialists and trade_filter_regime_models:
+                regime_label = _trade_filter_regime_label(
+                    pd.Series(trade_feature), cfg=cfg, train_spy_vol_median=train_spy_vol_median
+                )
+                reg_model = trade_filter_regime_models.get(regime_label)
+                if reg_model is not None:
+                    local_model = reg_model
+                    local_threshold = (
+                        trade_filter_regime_thresholds.get(regime_label, trade_filter_threshold)
+                        if trade_filter_regime_thresholds
+                        else trade_filter_threshold
+                    )
+            if local_model is not None and local_threshold is not None:
+                prob_keep = float(local_model.predict_proba(feat)[0, 1])
                 if not np.isfinite(prob_keep):
                     prob_keep = 0.50
-                threshold_used = float(trade_filter_threshold)
+                threshold_used = float(local_threshold)
                 if exp.use_regime_conditioned_ml_threshold:
                     spy_vol_now = float(pd.to_numeric(r.get("spy_vol_21", np.nan), errors="coerce"))
                     spy_dd_now = float(pd.to_numeric(r.get("spy_drawdown_252", np.nan), errors="coerce"))
@@ -2868,7 +3186,49 @@ def _build_trades(
                     )
                     conf = float(np.clip(conf * prob_scale, 0.25, 3.0))
                     edge_proxy = strength * conf
-            ml_score = float(prob_keep * edge_proxy) if np.isfinite(prob_keep) else float(edge_proxy)
+            ev_mu_hat = float("nan")
+            ev_risk_hat = float("nan")
+            ev_score = float(edge_proxy)
+            if exp.use_trade_filter_ev_regression and trade_ev_mu_model is not None and trade_ev_risk_model is not None:
+                ev_mu_hat = float(trade_ev_mu_model.predict(feat)[0])
+                ev_risk_hat = float(max(0.0, trade_ev_risk_model.predict(feat)[0]))
+                ev_lambda = (
+                    float(exp.trade_ev_risk_lambda_override)
+                    if exp.trade_ev_risk_lambda_override is not None
+                    else float(cfg.trade_ev_risk_lambda)
+                )
+                ev_score = float(ev_mu_hat - ev_lambda * ev_risk_hat)
+                min_ev_score = (
+                    float(exp.trade_ev_min_score_override)
+                    if exp.trade_ev_min_score_override is not None
+                    else float(cfg.trade_ev_min_score)
+                )
+                if not np.isfinite(ev_score) or ev_score < min_ev_score:
+                    continue
+                ev_scaled = float(
+                    1.0
+                    / (
+                        1.0
+                        + np.exp(
+                            -np.clip(float(cfg.trade_ev_score_scale) * ev_score, -20.0, 20.0)
+                        )
+                    )
+                )
+                conf = float(np.clip(conf * (0.5 + ev_scaled), 0.25, 3.0))
+                edge_proxy = strength * conf
+            # Ensure downstream ranking uses post-ML adjusted edge.
+            trade_feature["confidence_score"] = float(conf)
+            trade_feature["edge_proxy"] = float(edge_proxy)
+            trade_feature["signal_strength"] = float(strength)
+            exit_cont_prob = float("nan")
+            exit_risk_prob = float("nan")
+            if exp.use_exit_intelligence and exit_intel_cont_model is not None and exit_intel_risk_model is not None:
+                exit_cont_prob = float(exit_intel_cont_model.predict_proba(feat)[0, 1])
+                exit_risk_prob = float(exit_intel_risk_model.predict_proba(feat)[0, 1])
+            if exp.use_trade_filter_ev_regression:
+                ml_score = float(ev_score)
+            else:
+                ml_score = float(prob_keep * edge_proxy) if np.isfinite(prob_keep) else float(edge_proxy)
             cands.append(
                 {
                     "asset": asset,
@@ -2879,6 +3239,12 @@ def _build_trades(
                     "priority": edge_proxy,
                     "trade_filter_prob": prob_keep,
                     "ml_score": ml_score,
+                    "ev_score": ev_score,
+                    "ev_mu_hat": ev_mu_hat,
+                    "ev_risk_hat": ev_risk_hat,
+                    "exit_cont_prob": exit_cont_prob,
+                    "exit_risk_prob": exit_risk_prob,
+                    "trade_filter_regime": regime_label,
                 }
             )
 
@@ -3046,6 +3412,29 @@ def _build_trades(
                 ent_vol = float(r["vol_21"])
                 if np.isfinite(ent_vol):
                     bear_trail = float(np.clip(cfg.vol_trail_mult * ent_vol, cfg.vol_trail_min, cfg.vol_trail_max))
+            if exp.use_exit_intelligence:
+                cont_thr = (
+                    float(exp.exit_intel_cont_threshold_override)
+                    if exp.exit_intel_cont_threshold_override is not None
+                    else float(cfg.exit_intel_cont_threshold)
+                )
+                risk_thr = (
+                    float(exp.exit_intel_risk_threshold_override)
+                    if exp.exit_intel_risk_threshold_override is not None
+                    else float(cfg.exit_intel_risk_threshold)
+                )
+                cont_p = float(c.get("exit_cont_prob", float("nan")))
+                risk_p = float(c.get("exit_risk_prob", float("nan")))
+                if np.isfinite(cont_p) and np.isfinite(risk_p):
+                    if cont_p >= cont_thr and risk_p < risk_thr:
+                        hard_end = min(n_dates - 1, hard_end + int(max(1, cfg.exit_intel_extend_days)))
+                        profit_lock_trigger = float(profit_lock_trigger * float(cfg.exit_intel_trigger_relax_mult))
+                        profit_lock_trail = float(profit_lock_trail * float(cfg.exit_intel_trail_relax_mult))
+                    elif risk_p >= risk_thr and cont_p < cont_thr:
+                        cut_days = int(max(3, round(hold_days * float(cfg.exit_intel_cut_hold_frac))))
+                        hard_end = min(hard_end, sig_idx + cut_days)
+                        profit_lock_trigger = float(profit_lock_trigger * float(cfg.exit_intel_trigger_tighten_mult))
+                        profit_lock_trail = float(profit_lock_trail * float(cfg.exit_intel_trail_tighten_mult))
 
             for j in range(start_idx, hard_end + 1):
                 ts_j = all_dates[j]
@@ -3954,6 +4343,12 @@ def _run_single_experiment(
         if exp.use_confidence_calibration:
             conf_cal_slope, conf_cal_intercept = _build_confidence_calibrator(train)
         trade_filter_model, trade_filter_threshold = (None, None)
+        trade_filter_regime_models: dict[str, HistGradientBoostingClassifier] | None = None
+        trade_filter_regime_thresholds: dict[str, float] | None = None
+        trade_ev_mu_model: HistGradientBoostingRegressor | None = None
+        trade_ev_risk_model: HistGradientBoostingRegressor | None = None
+        exit_intel_cont_model: HistGradientBoostingClassifier | None = None
+        exit_intel_risk_model: HistGradientBoostingClassifier | None = None
         if exp.use_trade_filter_model:
             trade_filter_model, trade_filter_threshold = _fit_trade_filter_model(
                 train_panel=train,
@@ -3965,6 +4360,36 @@ def _run_single_experiment(
                 conf_cal_slope=conf_cal_slope,
                 conf_cal_intercept=conf_cal_intercept,
             )
+            x_train, y_train, net_ret_train = _build_trade_filter_training_dataset(
+                train_panel=train,
+                cfg=cfg,
+                exp=exp,
+                train_spy_vol_median=train_spy_vol_median,
+                asset_efficacy_map=asset_efficacy_map,
+                asset_efficacy_threshold=asset_efficacy_thr,
+                conf_cal_slope=conf_cal_slope,
+                conf_cal_intercept=conf_cal_intercept,
+            )
+            if exp.use_trade_filter_ev_regression:
+                trade_ev_mu_model, trade_ev_risk_model = _fit_trade_filter_ev_models(
+                    x=x_train,
+                    net_ret_arr=net_ret_train,
+                    cfg=cfg,
+                )
+            if exp.use_trade_filter_regime_specialists:
+                trade_filter_regime_models, trade_filter_regime_thresholds = _fit_trade_filter_regime_specialists(
+                    x=x_train,
+                    y=y_train,
+                    net_ret_arr=net_ret_train,
+                    cfg=cfg,
+                    train_spy_vol_median=train_spy_vol_median,
+                )
+            if exp.use_exit_intelligence:
+                exit_intel_cont_model, exit_intel_risk_model = _fit_exit_intelligence_models(
+                    x=x_train,
+                    net_ret_arr=net_ret_train,
+                    cfg=cfg,
+                )
         trades = _build_trades(
             test_panel=test,
             cfg=cfg,
@@ -3977,6 +4402,12 @@ def _run_single_experiment(
             conf_cal_intercept=conf_cal_intercept,
             trade_filter_model=trade_filter_model,
             trade_filter_threshold=trade_filter_threshold,
+            trade_filter_regime_models=trade_filter_regime_models,
+            trade_filter_regime_thresholds=trade_filter_regime_thresholds,
+            trade_ev_mu_model=trade_ev_mu_model,
+            trade_ev_risk_model=trade_ev_risk_model,
+            exit_intel_cont_model=exit_intel_cont_model,
+            exit_intel_risk_model=exit_intel_risk_model,
         )
         daily, trades_eval = _simulate_fold(
             test_panel=test,
