@@ -288,6 +288,7 @@ class Config:
     interval: str = "1d"
     signal_lookback_days: int = 63
     rolling_vwap_window: int = 20
+    vwap_ema_span: int = 10
     vol_window_days: int = 21
     rel_strength_threshold: float = 0.02
     top_quantile: float = 0.92
@@ -467,6 +468,7 @@ class ExperimentSpec:
     use_cluster_caps: bool = True
     use_adaptive_cooldown: bool = False
     use_dynamic_edge_floor: bool = False
+    use_vwap_ema_signal: bool = False
     use_quality_priority_cap: bool = False
     use_portfolio_vol_target: bool = False
     use_side_aware_cooldown: bool = False
@@ -1515,6 +1517,41 @@ EXPERIMENTS: tuple[ExperimentSpec, ...] = (
         sleeve_bear_short_gross_override=0.65,
     ),
     ExperimentSpec(
+        name="smart_breadth_quality_2x_vwap_ema_signal",
+        use_reentry_cooldown=False,
+        use_liquidity_filter=True,
+        use_asset_efficacy_filter=True,
+        use_dynamic_cluster_caps=True,
+        use_dynamic_edge_floor=True,
+        use_custom_edge_threshold=True,
+        custom_base_edge_threshold=0.010,
+        custom_additional_edge_threshold=0.010,
+        gross_target_override=2.0,
+        max_abs_weight_per_asset_override=0.11,
+        use_trade_filter_model=True,
+        use_trade_filter_hard_gate=True,
+        trade_filter_backfill_fraction_override=0.80,
+        trade_filter_prob_quantile_override=0.57,
+        use_trade_filter_regime_specialists=True,
+        use_vwap_ema_signal=True,
+        use_market_stop_loss=True,
+        use_soft_cashflow_weighting=True,
+        cashflow_soft_floor_override=0.55,
+        cashflow_soft_min_scale_override=0.70,
+        use_market_stop_state_machine=True,
+        market_stop_stage1_drawdown_override=0.09,
+        market_stop_stage2_drawdown_override=0.13,
+        market_stop_stage1_scale_override=0.50,
+        market_stop_stage2_scale_override=0.20,
+        market_stop_state_recovery_override=0.04,
+        use_bear_short_sleeve=True,
+        sleeve_bear_short_spy_dd_threshold_override=-0.06,
+        sleeve_bear_short_vol_mult_override=0.95,
+        sleeve_bear_short_rel_quantile_override=0.25,
+        sleeve_bear_short_max_names_override=22,
+        sleeve_bear_short_gross_override=0.65,
+    ),
+    ExperimentSpec(
         name="smart_breadth_quality_3x_ml_champion_v3_softw",
         use_reentry_cooldown=False,
         use_liquidity_filter=True,
@@ -2280,6 +2317,10 @@ def _build_panel(bars: pd.DataFrame, spy: pd.DataFrame, cfg: Config) -> pd.DataF
         .reset_index(level=0, drop=True)
         .replace(0.0, np.nan)
     )
+    frame["rolling_vwap_ema"] = (
+        frame.groupby("asset", sort=False)["rolling_vwap"]
+        .transform(lambda s: s.ewm(span=cfg.vwap_ema_span, adjust=False, min_periods=cfg.vwap_ema_span).mean())
+    )
 
     look = cfg.signal_lookback_days
     frame["past_return"] = g["close"].pct_change(look)
@@ -2345,6 +2386,8 @@ def _build_panel(bars: pd.DataFrame, spy: pd.DataFrame, cfg: Config) -> pd.DataF
 
     frame["score"] = np.sign(frame["past_return"]) * (frame["close"] / frame["rolling_vwap"] - 1.0)
     frame["rank_pct"] = frame.groupby("timestamp")["score"].rank(pct=True, method="average")
+    frame["score_vwap_ema"] = np.sign(frame["past_return"]) * (frame["close"] / frame["rolling_vwap_ema"] - 1.0)
+    frame["rank_pct_vwap_ema"] = frame.groupby("timestamp")["score_vwap_ema"].rank(pct=True, method="average")
     frame["score_pos"] = (frame["score"] > 0.0).astype(float)
     frame["breadth_pos_score"] = frame.groupby("timestamp")["score_pos"].transform("mean")
 
@@ -3104,8 +3147,12 @@ def _build_trades(
         rejected_by_filter: list[dict[str, object]] = []
         for _, r in daily.iterrows():
             asset = str(r["asset"])
-            rank = float(r["rank_pct"])
-            rel = float(r["rel_strength_63"])
+            if exp.use_vwap_ema_signal:
+                rank = float(pd.to_numeric(r.get("rank_pct_vwap_ema", r["rank_pct"]), errors="coerce"))
+                rel = float(pd.to_numeric(r.get("rel_strength_21", r["rel_strength_63"]), errors="coerce"))
+            else:
+                rank = float(r["rank_pct"])
+                rel = float(r["rel_strength_63"])
             if rank < top_q or rel < rel_thresh:
                 continue
             cf_rank = float(r["adv_rank_pct"])
