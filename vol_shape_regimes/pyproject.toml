@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vol-shape-regimes"
+version = "0.1.0"
+description = "Volatility-shape embedding, clustering, and Markov transition research module."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "numpy",
+  "pandas",
+  "scipy",
+  "scikit-learn",
+  "matplotlib",
+  "pyyaml",
+  "yfinance",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["vol_shape_regimes*"]
+
+[project.scripts]
+vol-shape-run = "vol_shape_regimes.pipeline:main"

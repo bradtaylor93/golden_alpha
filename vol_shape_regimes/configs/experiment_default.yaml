@@ -1,0 +1,50 @@
+inherits: /workspace/vol_shape_regimes/configs/base.yaml
+
+experiment_name: experiment_default
+
+data:
+  source: yahoo
+  asset: SPY
+  start: "2012-01-01"
+  end: null
+  random_state: 42
+
+volatility:
+  method: ewma_std
+  rolling_window: 20
+  ewma_span: 20
+
+features:
+  lookback_window: 50
+  modes: ["summary", "quantile", "temporal"]
+  quantile_points: 31
+  temporal_downsample: 12
+  temporal_dct_components: 8
+  temporal_acf_lags: 5
+  pacf_lags: 3
+
+embedding:
+  method: pca
+  standardize: true
+  pca_variance_threshold: 0.95
+  max_components: 16
+
+clustering:
+  methods: ["kmeans", "gmm"]
+  k_min: 3
+  k_max: 6
+  random_state: 42
+  min_state_occupancy: 0.04
+  select_metric: silhouette
+
+transitions:
+  markov_order: 1
+  fit_second_order: true
+  fit_conditional_model: true
+
+evaluation:
+  train_ratio: 0.70
+  top_k_accuracy: 2
+
+output:
+  base_dir: /workspace/vol_shape_regimes/outputs

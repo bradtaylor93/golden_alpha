@@ -1,0 +1,11 @@
+inherits: /workspace/vol_shape_regimes/configs/experiment_hourly.yaml
+
+experiment_name: experiment_hourly_gmm5
+
+clustering:
+  methods: ["gmm"]
+  k_min: 5
+  k_max: 5
+  random_state: 42
+  min_state_occupancy: 0.03
+  select_metric: silhouette
