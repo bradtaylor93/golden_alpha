@@ -67,16 +67,19 @@ def run_full_pipeline(
     # ---------------------------------------------------------------
     # Step 1: Get trial data
     # ---------------------------------------------------------------
-    trials_cache = DATA_DIR / "trials_raw.parquet"
+    trials_cache = DATA_DIR / "trials_raw.csv"
 
     if use_cached and trials_cache.exists():
         logger.info("Loading cached trial data from %s", trials_cache)
-        trials = pd.read_parquet(trials_cache)
+        trials = pd.read_csv(trials_cache, parse_dates=[
+            "primary_completion_date", "completion_date",
+            "results_first_post_date", "study_first_post_date",
+        ])
     else:
         logger.info("Fetching trial data from ClinicalTrials.gov ...")
         trials = fetch_trials_with_results(max_trials=max_trials)
         if not trials.empty:
-            trials.to_parquet(trials_cache, index=False)
+            trials.to_csv(trials_cache, index=False)
             logger.info("Cached %d trials to %s", len(trials), trials_cache)
 
     if trials.empty:
@@ -100,16 +103,18 @@ def run_full_pipeline(
     # ---------------------------------------------------------------
     # Step 3: Build event-price dataset
     # ---------------------------------------------------------------
-    price_cache = DATA_DIR / "event_prices.parquet"
+    price_cache = DATA_DIR / "event_prices.csv"
 
     if use_cached and price_cache.exists():
         logger.info("Loading cached price data from %s", price_cache)
-        event_prices = pd.read_parquet(price_cache)
+        event_prices = pd.read_csv(price_cache, parse_dates=[
+            "event_date", "nearest_trading_date",
+        ])
     else:
         logger.info("Fetching price data for %d events ...", len(matched))
         event_prices = build_event_price_dataset(matched)
         if not event_prices.empty:
-            event_prices.to_parquet(price_cache, index=False)
+            event_prices.to_csv(price_cache, index=False)
 
     if event_prices.empty:
         logger.error("No price data available. Exiting.")
@@ -125,7 +130,7 @@ def run_full_pipeline(
     classified = classify_moves(event_prices, threshold_pct=5.0)
     stats = compute_summary_stats(classified)
     results["price_analysis"] = {
-        k: v.to_dict() if isinstance(v, (pd.DataFrame, pd.Series)) else v
+        k: v.to_string() if isinstance(v, (pd.DataFrame, pd.Series)) else v
         for k, v in stats.items()
     }
 
@@ -163,7 +168,7 @@ def run_full_pipeline(
 
     quality_summary = summarize_by_signal_quality(scored)
     if not quality_summary.empty:
-        results["signal_quality_breakdown"] = quality_summary.to_dict()
+        results["signal_quality_breakdown"] = quality_summary.to_string()
 
     # Save scored dataset
     scored.to_csv(OUTPUT_DIR / "scored_events.csv", index=False)
@@ -204,12 +209,15 @@ def print_summary(results: dict) -> None:
             print(f"    Sharpe/trade:{strat.get('sharpe_per_trade', 'N/A')}")
 
     pa = results.get("price_analysis", {})
-    antic = pa.get("anticipation_stats", {})
-    if antic:
+    antic = pa.get("anticipation_stats")
+    if antic and isinstance(antic, dict):
         print(f"\n  Pre-event anticipation:")
         print(f"    Events analyzed:                  {antic.get('n_events', 'N/A')}")
         print(f"    Same direction (pre/post):        {antic.get('pct_same_direction', 'N/A')}%")
         print(f"    Big pre-move + same dir:          {antic.get('pct_pre_big_and_same_dir', 'N/A')}%")
+    elif antic:
+        print(f"\n  Pre-event anticipation:")
+        print(f"    {antic}")
 
     print("\n" + "=" * 70)
     print(f"  Full results: {OUTPUT_DIR / 'analysis_summary.json'}")

@@ -61,11 +61,14 @@ def fetch_trials_with_results(
 
     with tqdm(total=max_trials, desc="Fetching trials") as pbar:
         while fetched < max_trials:
+            query_parts = [
+                f"AREA[Phase]{phase}",
+                f"AREA[LeadSponsorClass]{sponsor_type}",
+                "AREA[ResultsFirstPostDate]RANGE[MIN,MAX]",
+            ]
             params = {
-                "query.term": f"AREA[Phase]{phase}",
+                "query.term": " AND ".join(query_parts),
                 "filter.overallStatus": "COMPLETED",
-                "filter.sponsorType": sponsor_type,
-                "postFilter.resultsAvailable": "true",
                 "pageSize": min(page_size, max_trials - fetched),
                 "fields": (
                     "NCTId,BriefTitle,OrgFullName,Phase,"
@@ -270,31 +273,34 @@ def build_event_price_dataset(
     """
     For each event row, fetch price data and compute returns over
     multiple windows before and after the event date.
+    Fetches prices per-event to handle events spanning different years.
     """
     from config import PRE_EVENT_WINDOWS, POST_EVENT_WINDOWS
 
     results = []
-    grouped = events.dropna(subset=[date_col, ticker_col]).groupby(ticker_col)
+    valid = events.dropna(subset=[date_col, ticker_col])
+    price_cache = {}
 
-    for ticker, group in tqdm(grouped, desc="Fetching prices"):
-        all_dates = group[date_col].dropna().sort_values()
-        if all_dates.empty:
-            continue
-
-        price_df = fetch_price_data(
-            ticker,
-            all_dates.iloc[0],
-            lookback=max(PRE_EVENT_WINDOWS) + 5,
-            lookforward=max(POST_EVENT_WINDOWS) + 5,
-        )
-        if price_df is None or price_df.empty:
-            continue
-
-        trading_dates = price_df.index
+    for ticker in tqdm(valid[ticker_col].unique(), desc="Fetching prices"):
+        group = valid[valid[ticker_col] == ticker]
 
         for _, row in group.iterrows():
             event_dt = pd.Timestamp(row[date_col])
-            # Find nearest trading day on or after the event date
+            cache_key = (ticker, event_dt.strftime("%Y-%m"))
+
+            if cache_key not in price_cache:
+                price_df = fetch_price_data(
+                    ticker, event_dt,
+                    lookback=max(PRE_EVENT_WINDOWS) + 5,
+                    lookforward=max(POST_EVENT_WINDOWS) + 5,
+                )
+                price_cache[cache_key] = price_df
+
+            price_df = price_cache[cache_key]
+            if price_df is None or price_df.empty:
+                continue
+
+            trading_dates = price_df.index
             on_or_after = trading_dates[trading_dates >= event_dt]
             if on_or_after.empty:
                 continue
@@ -327,7 +333,6 @@ def build_event_price_dataset(
                     )
                     rec[f"post_{w}d_close"] = post_close
 
-            # Volume analysis around event
             if event_idx >= 20:
                 avg_vol = price_df.iloc[event_idx - 20:event_idx]["Volume"].mean()
                 event_vol = price_df.iloc[event_idx]["Volume"]
