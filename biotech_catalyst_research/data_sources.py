@@ -39,6 +39,37 @@ logger = logging.getLogger(__name__)
 # 1. ClinicalTrials.gov – trials with results from publicly-traded sponsors
 # ---------------------------------------------------------------------------
 
+_HIGH_IMPACT_CONDITIONS = {
+    "oncology": ["cancer", "tumor", "carcinoma", "melanoma", "lymphoma",
+                 "leukemia", "myeloma", "sarcoma", "glioblastoma", "nsclc",
+                 "neoplasm", "malignant", "metastat"],
+    "rare_disease": ["orphan", "rare", "duchenne", "dmd", "sma", "cystic fibrosis",
+                     "huntington", "als", "amyotrophic", "gaucher", "fabry",
+                     "hemophilia", "thalassemia", "pku", "phenylketonuria"],
+    "neurology": ["alzheimer", "parkinson", "multiple sclerosis", "epilepsy",
+                  "migraine", "depression", "schizophrenia", "bipolar",
+                  "anxiety", "adhd", "autism", "neuropath"],
+    "immunology": ["lupus", "rheumatoid", "crohn", "colitis", "psoriasis",
+                   "atopic dermatitis", "asthma", "eczema", "autoimmune"],
+    "infectious": ["hiv", "hepatitis", "covid", "influenza", "tuberculosis",
+                   "malaria", "infection"],
+    "cardiovascular": ["heart failure", "hypertension", "atrial fibrillation",
+                       "coronary", "stroke", "thrombosis", "pulmonary arterial"],
+    "metabolic": ["diabetes", "obesity", "nash", "nafld", "cholesterol",
+                  "lipid", "metabolic"],
+}
+
+
+def _categorize_condition(conditions: list[str]) -> str:
+    """Categorize trial conditions into therapeutic areas."""
+    text = " ".join(conditions).lower()
+    matches = []
+    for category, keywords in _HIGH_IMPACT_CONDITIONS.items():
+        if any(kw in text for kw in keywords):
+            matches.append(category)
+    return ",".join(matches) if matches else "other"
+
+
 def fetch_trials_with_results(
     sponsor_type: str = "INDUSTRY",
     phase: str = "PHASE3",
@@ -70,12 +101,6 @@ def fetch_trials_with_results(
                 "query.term": " AND ".join(query_parts),
                 "filter.overallStatus": "COMPLETED",
                 "pageSize": min(page_size, max_trials - fetched),
-                "fields": (
-                    "NCTId,BriefTitle,OrgFullName,Phase,"
-                    "CompletionDate,ResultsFirstPostDate,"
-                    "PrimaryCompletionDate,StudyFirstPostDate,"
-                    "OverallStatus,LeadSponsorName,Condition"
-                ),
                 "format": "json",
             }
             if next_page_token:
@@ -103,23 +128,56 @@ def fetch_trials_with_results(
                 status = proto.get("statusModule", {})
                 sponsor = proto.get("sponsorCollaboratorsModule", {})
                 conditions = proto.get("conditionsModule", {})
+                design = proto.get("designModule", {})
+                design_info = design.get("designInfo", {})
+                masking_info = design_info.get("maskingInfo", {})
+                enrollment = design.get("enrollmentInfo", {})
+                arms_mod = proto.get("armsInterventionsModule", {})
+                outcomes = proto.get("outcomesModule", {})
 
                 lead = sponsor.get("leadSponsor", {})
                 completion = status.get("completionDateStruct", {})
                 results_date = status.get("resultsFirstPostDateStruct", {})
                 primary_completion = status.get("primaryCompletionDateStruct", {})
 
+                # Extract intervention types and names
+                interventions = arms_mod.get("interventions", [])
+                intervention_types = [i.get("type", "") for i in interventions]
+                intervention_names = [i.get("name", "") for i in interventions]
+
+                # Count arms and arm types
+                arm_groups = arms_mod.get("armGroups", [])
+                arm_types = [a.get("type", "") for a in arm_groups]
+
+                # Primary outcomes
+                primary_outcomes = outcomes.get("primaryOutcomes", [])
+
+                condition_list = conditions.get("conditions", [])
+
                 records.append({
                     "nct_id": ident.get("nctId"),
                     "title": ident.get("briefTitle"),
                     "sponsor": lead.get("name"),
-                    "phase": ",".join(proto.get("designModule", {}).get("phases", [])),
-                    "conditions": ",".join(conditions.get("conditions", [])),
+                    "phase": ",".join(design.get("phases", [])),
+                    "conditions": ",".join(condition_list),
                     "overall_status": status.get("overallStatus"),
                     "primary_completion_date": primary_completion.get("date"),
                     "completion_date": completion.get("date"),
                     "results_first_post_date": results_date.get("date"),
                     "study_first_post_date": status.get("studyFirstPostDateStruct", {}).get("date"),
+                    # Catalyst grading fields
+                    "enrollment": enrollment.get("count"),
+                    "allocation": design_info.get("allocation"),
+                    "intervention_model": design_info.get("interventionModel"),
+                    "primary_purpose": design_info.get("primaryPurpose"),
+                    "masking": masking_info.get("masking"),
+                    "n_arms": len(arm_groups),
+                    "arm_types": ",".join(arm_types),
+                    "intervention_types": ",".join(intervention_types),
+                    "intervention_names": "|".join(intervention_names),
+                    "n_primary_outcomes": len(primary_outcomes),
+                    "is_fda_regulated": proto.get("oversightModule", {}).get("isFDARegulatedDrug"),
+                    "condition_category": _categorize_condition(condition_list),
                 })
 
             fetched += len(studies)

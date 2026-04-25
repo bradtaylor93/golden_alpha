@@ -135,22 +135,38 @@ def compute_strategy_returns(
 
 
 def strategy_summary(df: pd.DataFrame) -> dict:
-    """Summarize strategy performance."""
+    """Summarize strategy performance including annualized Sharpe."""
     if df.empty or "net_return" not in df.columns:
         return {}
 
     net = df["net_return"].dropna()
+    sharpe_per_trade = round(net.mean() / net.std(), 3) if net.std() > 0 else np.nan
+
+    # Estimate annualized Sharpe: Sharpe_annual = Sharpe_trade * sqrt(trades/year)
+    if "event_date" in df.columns:
+        dates = pd.to_datetime(df["event_date"])
+        span_years = max((dates.max() - dates.min()).days / 365.25, 0.5)
+        trades_per_year = len(net) / span_years
+    else:
+        trades_per_year = 12.0  # conservative default
+
+    annualized_sharpe = (
+        sharpe_per_trade * np.sqrt(trades_per_year)
+        if not np.isnan(sharpe_per_trade) else np.nan
+    )
+
     return {
         "n_trades": len(net),
         "mean_return_pct": round(net.mean() * 100, 3),
         "median_return_pct": round(net.median() * 100, 3),
         "std_pct": round(net.std() * 100, 3),
-        "sharpe_per_trade": round(net.mean() / net.std(), 3) if net.std() > 0 else np.nan,
+        "sharpe_per_trade": sharpe_per_trade,
+        "annualized_sharpe": round(annualized_sharpe, 2) if not np.isnan(annualized_sharpe) else np.nan,
+        "trades_per_year": round(trades_per_year, 1),
         "win_rate_pct": round((net > 0).mean() * 100, 1),
         "best_pct": round(net.max() * 100, 2),
         "worst_pct": round(net.min() * 100, 2),
         "total_return_pct": round((1 + net).prod() - 1, 4) * 100,
-        "avg_holding_period_comment": "Entry to exit window as configured",
     }
 
 

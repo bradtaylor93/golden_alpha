@@ -45,6 +45,12 @@ from false_positive_reduction import (
     compute_signal_score,
     summarize_by_signal_quality,
 )
+from catalyst_grading import (
+    compute_catalyst_grade,
+    analyze_grades_vs_returns,
+    analyze_grades_vs_abs_returns,
+    analyze_conditional_by_grade,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -319,6 +325,36 @@ def run_full_pipeline(
     scored.to_csv(OUTPUT_DIR / "scored_events.csv", index=False)
 
     # ---------------------------------------------------------------
+    # Step 7: Catalyst importance grading
+    # ---------------------------------------------------------------
+    logger.info("Computing catalyst importance grades ...")
+
+    # Merge trial metadata back onto scored events for grading
+    trial_meta_cols = ["nct_id", "phase", "enrollment", "allocation",
+                       "masking", "primary_purpose", "n_primary_outcomes",
+                       "condition_category", "is_fda_regulated", "n_arms",
+                       "intervention_types", "conditions"]
+    existing_meta = [c for c in trial_meta_cols if c in combined.columns]
+    if existing_meta:
+        meta = combined[existing_meta].drop_duplicates(subset=["nct_id"])
+        scored = scored.merge(meta, on="nct_id", how="left")
+
+    graded = compute_catalyst_grade(scored)
+
+    grade_dist = graded["catalyst_grade"].value_counts().sort_index()
+    results["catalyst_grade_distribution"] = grade_dist.to_dict()
+
+    abs_analysis = analyze_grades_vs_abs_returns(graded)
+    if not abs_analysis.empty:
+        results["grades_vs_abs_moves"] = abs_analysis.to_string(index=False)
+
+    cond_by_grade = analyze_conditional_by_grade(graded)
+    if not cond_by_grade.empty:
+        results["conditional_by_grade"] = cond_by_grade.to_string(index=False)
+
+    graded.to_csv(OUTPUT_DIR / "graded_events.csv", index=False)
+
+    # ---------------------------------------------------------------
     # Output summary
     # ---------------------------------------------------------------
     summary_path = OUTPUT_DIR / "analysis_summary.json"
@@ -358,10 +394,11 @@ def print_summary(results: dict) -> None:
     naive = results.get("strategy_naive_long_5d_1d", {})
     if naive:
         print(f"\n  STRATEGY 1: Naive Long (buy 5d before, sell 1d after)")
-        print(f"    Trades:      {naive.get('n_trades', 'N/A')}")
+        print(f"    Trades:      {naive.get('n_trades', 'N/A')} ({naive.get('trades_per_year', '?')}/yr)")
         print(f"    Win rate:    {naive.get('win_rate_pct', 'N/A')}%")
         print(f"    Mean return: {naive.get('mean_return_pct', 'N/A')}%")
-        print(f"    Sharpe/trade:{naive.get('sharpe_per_trade', 'N/A')}")
+        print(f"    Sharpe/trade:     {naive.get('sharpe_per_trade', 'N/A')}")
+        print(f"    Annualized Sharpe:{naive.get('annualized_sharpe', 'N/A')}")
 
     # Conditional momentum
     cond = results.get("conditional_strategy_detail", {})
@@ -373,10 +410,31 @@ def print_summary(results: dict) -> None:
         print(f"    Entry: {cond_best.get('entry_window', '?')}d before, "
               f"Exit: {cond_best.get('exit_window', '?')}d after")
         print(f"    Trades:      {cond.get('n_trades', 'N/A')} "
-              f"(L:{cond_best.get('n_long','?')} / S:{cond_best.get('n_short','?')})")
+              f"({cond.get('trades_per_year','?')}/yr, "
+              f"L:{cond_best.get('n_long','?')} / S:{cond_best.get('n_short','?')})")
         print(f"    Win rate:    {cond.get('win_rate_pct', 'N/A')}%")
         print(f"    Mean return: {cond.get('mean_return_pct', 'N/A')}%")
-        print(f"    Sharpe/trade:{cond.get('sharpe_per_trade', 'N/A')}")
+        print(f"    Sharpe/trade:     {cond.get('sharpe_per_trade', 'N/A')}")
+        print(f"    ANNUALIZED SHARPE:{cond.get('annualized_sharpe', 'N/A')}")
+
+    # Catalyst grades
+    grade_dist = results.get("catalyst_grade_distribution", {})
+    if grade_dist:
+        print(f"\n  CATALYST IMPORTANCE GRADES")
+        for g in ["A", "B", "C", "D"]:
+            print(f"    Grade {g}: {grade_dist.get(g, 0)} events")
+
+    grades_abs = results.get("grades_vs_abs_moves")
+    if grades_abs:
+        print(f"\n  Absolute moves by grade:")
+        for line in str(grades_abs).split("\n"):
+            print(f"    {line}")
+
+    cond_grade = results.get("conditional_by_grade")
+    if cond_grade:
+        print(f"\n  Conditional strategy by catalyst grade:")
+        for line in str(cond_grade).split("\n"):
+            print(f"    {line}")
 
     top5_cond = results.get("conditional_top5")
     if top5_cond:
@@ -416,5 +474,5 @@ def print_summary(results: dict) -> None:
 
 
 if __name__ == "__main__":
-    max_trials = int(sys.argv[1]) if len(sys.argv) > 1 else 1000
+    max_trials = int(sys.argv[1]) if len(sys.argv) > 1 else 3000
     run_full_pipeline(max_trials=max_trials)
