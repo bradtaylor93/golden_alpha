@@ -30,5 +30,8 @@ VOLUME_SPIKE_THRESHOLD = 2.0
 # Minimum market cap for tradability (USD)
 MIN_MARKET_CAP = 100_000_000
 
+# Maximum market cap – focus on small/mid cap where catalysts move the stock
+MAX_MARKET_CAP = 20_000_000_000
+
 # Minimum average daily dollar volume for tradability
 MIN_ADV_DOLLARS = 1_000_000

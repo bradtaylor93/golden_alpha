@@ -184,21 +184,22 @@ def load_pdufa_dates(csv_path: Optional[str] = None) -> pd.DataFrame:
 # plus a manual override dictionary.
 
 _MANUAL_TICKER_MAP = {
+    # --- Large cap (>$20B, kept for completeness but filtered later) ---
     "Pfizer": "PFE",
-    "Merck Sharp & Dohme LLC": "MRK",
-    "Merck Sharp & Dohme Corp.": "MRK",
+    "Merck Sharp & Dohme": "MRK",
     "Novartis": "NVS",
-    "Novartis Pharmaceuticals": "NVS",
     "Roche": "RHHBY",
     "Hoffmann-La Roche": "RHHBY",
+    "Genentech": "RHHBY",
     "AstraZeneca": "AZN",
     "Johnson & Johnson": "JNJ",
+    "Janssen": "JNJ",
     "Bristol-Myers Squibb": "BMY",
-    "Eli Lilly and Company": "LLY",
+    "Eli Lilly": "LLY",
     "AbbVie": "ABBV",
     "Amgen": "AMGN",
     "Gilead Sciences": "GILD",
-    "Regeneron Pharmaceuticals": "REGN",
+    "Regeneron": "REGN",
     "Vertex Pharmaceuticals": "VRTX",
     "Biogen": "BIIB",
     "Moderna": "MRNA",
@@ -209,6 +210,101 @@ _MANUAL_TICKER_MAP = {
     "Takeda": "TAK",
     "Novo Nordisk": "NVO",
     "Bayer": "BAYRY",
+    "Daiichi Sankyo": "DSNKY",
+    "Astellas": "ALPMY",
+    "Boehringer Ingelheim": "0#BING",  # private, no ticker
+    "Otsuka Pharmaceutical": "OTSKF",
+    "Teva": "TEVA",
+    "CSL Behring": "CSLLY",
+    # --- Mid cap ($2B–$20B) ---
+    "BioMarin Pharmaceutical": "BMRN",
+    "BioMarin": "BMRN",
+    "Incyte": "INCY",
+    "Ionis Pharmaceuticals": "IONS",
+    "Alnylam Pharmaceuticals": "ALNY",
+    "BeiGene": "BGNE",
+    "Jazz Pharmaceuticals": "JAZZ",
+    "Neurocrine": "NBIX",
+    "Insmed": "INSM",
+    "Ascendis Pharma": "ASND",
+    "Alkermes": "ALKS",
+    "UCB Pharma": "UCBJY",
+    "UCB Biopharma": "UCBJY",
+    "UCB Japan": "UCBJY",
+    "Ipsen": "IPSEY",
+    "Eisai": "ESALY",
+    "Shionogi": "SGIOY",
+    "Celgene": "CELG",
+    "ACADIA Pharmaceuticals": "ACAD",
+    "Aurinia Pharmaceuticals": "AUPH",
+    "Lexicon Pharmaceuticals": "LXRX",
+    "Rhythm Pharmaceuticals": "RYTM",
+    "Supernus Pharmaceuticals": "SUPN",
+    "Lantheus": "LNTH",
+    "Amphastar Pharmaceuticals": "AMPH",
+    "Samsung Bioepis": "207940.KS",
+    "Swedish Orphan Biovitrum": "BIOVF",
+    "Allergan": "AGN",
+    "Celltrion": "068270.KS",
+    "Vanda Pharmaceuticals": "VNDA",
+    "Spectrum Pharmaceuticals": "SPPI",
+    "The Medicines Company": "MDCO",
+    # --- Small cap (<$2B) – the most interesting for catalyst trading ---
+    "Rigel Pharmaceuticals": "RIGL",
+    "BioXcel Therapeutics": "BTAI",
+    "Omeros": "OMER",
+    "Tonix Pharmaceuticals": "TNXP",
+    "Annovis Bio": "ANVS",
+    "Phathom Pharmaceuticals": "PHAT",
+    "Scynexis": "SCYX",
+    "Orexigen Therapeutics": "OREX",
+    "Motif Bio": "MTFB",
+    "Novan": "NOVN",
+    "Glaukos": "GKOS",
+    "Protalix": "PLX",
+    "Melinta Therapeutics": "MLNT",
+    "OPKO": "OPK",
+    "Cumberland Pharmaceuticals": "CPIX",
+    "Integra LifeSciences": "IART",
+    "Boston Scientific": "BSX",
+    "Dermira": "DERM",
+    "XenoPort": "XNPT",
+    "Alder Biopharmaceuticals": "ALDR",
+    "Otonomy": "OTIC",
+    "Human Genome Sciences": "HGSI",
+    "Valneva": "VALN",
+    "Forest Laboratories": "FRX",
+    "Kythera Biopharmaceuticals": "KYTH",
+    "Dr. Reddy's": "RDY",
+    "Sun Pharma": "SUNPHARMA.NS",
+    "Actelion": "ALIOY",
+    "ImmuPharma": "IMM.L",
+    "Bausch": "BHC",
+    "SANUWAVE": "SNWV",
+    "Timber Pharmaceuticals": "TMBR",
+    "VIVUS": "VVUS",
+    "Vyne Therapeutics": "VYNE",
+    "RVL Pharmaceuticals": "RVLP",
+    "Biocon": "BIOCON.NS",
+    "Abbott": "ABT",
+    "Sprout Pharmaceuticals": "SPRX",
+    "Bioverativ": "BIVV",
+    "Shire": "SHPG",
+    "Baxalta": "BXLT",
+    "EMD Serono": "MKGAY",
+    "Merck KGaA": "MKGAY",
+    "GE Healthcare": "GEHC",
+    "Organon": "OGN",
+    "LEO Pharma": "0#LEO",  # private
+    "Colgate Palmolive": "CL",
+    "Grifols": "GRFS",
+    "Fresenius Kabi": "FSNUY",
+    "Alcon": "ALC",
+    "ViiV Healthcare": "GSK",
+    "LianBio": "LIAN",
+    "HanAll BioPharma": "009420.KS",
+    "Kyowa Kirin": "KYKOF",
+    "Sumitomo Pharma": "SMPNY",
 }
 
 
@@ -218,14 +314,66 @@ def map_sponsor_to_ticker(sponsor_name: str) -> Optional[str]:
         return None
     for key, ticker in _MANUAL_TICKER_MAP.items():
         if key.lower() in sponsor_name.lower():
+            if ticker.startswith("0#"):
+                return None  # private company marker
             return ticker
     return None
 
 
-def enrich_trials_with_tickers(df: pd.DataFrame) -> pd.DataFrame:
-    """Add a 'ticker' column to the trials DataFrame."""
+_yf_lookup_cache: dict[str, Optional[str]] = {}
+
+
+def _yfinance_ticker_lookup(sponsor_name: str) -> Optional[str]:
+    """Attempt to find a ticker via yfinance search for unmatched sponsors."""
+    if sponsor_name in _yf_lookup_cache:
+        return _yf_lookup_cache[sponsor_name]
+
+    clean = sponsor_name.split(",")[0].split("(")[0].strip()
+    clean = clean.replace("Inc.", "").replace("LLC", "").replace("Ltd.", "").strip()
+
+    try:
+        results = yf.Search(clean, max_results=3)
+        quotes = getattr(results, "quotes", [])
+        if not quotes:
+            _yf_lookup_cache[sponsor_name] = None
+            return None
+
+        for q in quotes:
+            exchange = q.get("exchange", "")
+            symbol = q.get("symbol", "")
+            name = q.get("shortname", "") or q.get("longname", "")
+            if exchange in ("NMS", "NYQ", "NGM", "NCM", "ASE", "PCX"):
+                _yf_lookup_cache[sponsor_name] = symbol
+                return symbol
+
+        _yf_lookup_cache[sponsor_name] = None
+        return None
+    except Exception:
+        _yf_lookup_cache[sponsor_name] = None
+        return None
+
+
+def enrich_trials_with_tickers(
+    df: pd.DataFrame,
+    use_yfinance_lookup: bool = True,
+) -> pd.DataFrame:
+    """Add a 'ticker' column to the trials DataFrame.
+    First tries the manual map, then optionally falls back to yfinance search."""
     df = df.copy()
     df["ticker"] = df["sponsor"].apply(map_sponsor_to_ticker)
+
+    if use_yfinance_lookup:
+        unmatched_mask = df["ticker"].isna()
+        unmatched_sponsors = df.loc[unmatched_mask, "sponsor"].dropna().unique()
+        logger.info("Attempting yfinance lookup for %d unmatched sponsors...", len(unmatched_sponsors))
+
+        for sponsor in tqdm(unmatched_sponsors, desc="Ticker lookup"):
+            ticker = _yfinance_ticker_lookup(sponsor)
+            if ticker:
+                df.loc[df["sponsor"] == sponsor, "ticker"] = ticker
+                logger.info("  %s -> %s", sponsor, ticker)
+            time.sleep(0.2)
+
     return df
 
 

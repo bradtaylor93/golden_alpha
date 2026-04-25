@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import yfinance as yf
 
 from config import DATA_DIR, OUTPUT_DIR
 from data_sources import (
@@ -48,24 +49,30 @@ logger = logging.getLogger(__name__)
 
 
 def run_full_pipeline(
-    max_trials: int = 500,
+    max_trials: int = 1000,
     use_cached: bool = True,
+    max_market_cap: float = None,
 ) -> dict:
     """
     Execute the full research pipeline and return all results.
 
     Steps:
-        1. Fetch or load clinical trial data
+        1. Fetch or load clinical trial data (Phase 2 + Phase 3)
         2. Map sponsors to tickers
-        3. Fetch price data around events
-        4. Analyze pre/post price moves
-        5. Assess trade feasibility
-        6. Score signal quality for false positive reduction
+        3. Filter by market cap if max_market_cap is set
+        4. Fetch price data around events
+        5. Analyze pre/post price moves
+        6. Assess trade feasibility
+        7. Score signal quality for false positive reduction
     """
+    from config import MAX_MARKET_CAP
+    if max_market_cap is None:
+        max_market_cap = MAX_MARKET_CAP
+
     results = {}
 
     # ---------------------------------------------------------------
-    # Step 1: Get trial data
+    # Step 1: Get trial data (Phase 2 and Phase 3)
     # ---------------------------------------------------------------
     trials_cache = DATA_DIR / "trials_raw.csv"
 
@@ -77,7 +84,14 @@ def run_full_pipeline(
         ])
     else:
         logger.info("Fetching trial data from ClinicalTrials.gov ...")
-        trials = fetch_trials_with_results(max_trials=max_trials)
+        trials_p3 = fetch_trials_with_results(
+            phase="PHASE3", max_trials=max_trials,
+        )
+        trials_p2 = fetch_trials_with_results(
+            phase="PHASE2", max_trials=max_trials,
+        )
+        trials = pd.concat([trials_p3, trials_p2], ignore_index=True)
+        trials = trials.drop_duplicates(subset=["nct_id"])
         if not trials.empty:
             trials.to_csv(trials_cache, index=False)
             logger.info("Cached %d trials to %s", len(trials), trials_cache)
@@ -96,6 +110,47 @@ def run_full_pipeline(
     matched = trials.dropna(subset=["ticker"])
     results["n_trials_with_ticker"] = len(matched)
     logger.info("Trials with ticker match: %d / %d", len(matched), len(trials))
+
+    # ---------------------------------------------------------------
+    # Step 2b: Filter by market cap ceiling
+    # ---------------------------------------------------------------
+    if max_market_cap and max_market_cap < float("inf"):
+        logger.info("Filtering to tickers with market cap < $%.0fB ...",
+                     max_market_cap / 1e9)
+        mktcap_cache = DATA_DIR / "ticker_mktcaps.csv"
+        if use_cached and mktcap_cache.exists():
+            mktcap_df = pd.read_csv(mktcap_cache)
+        else:
+            records = []
+            for ticker in matched["ticker"].unique():
+                try:
+                    info = yf.Ticker(ticker).info
+                    mc = info.get("marketCap")
+                    records.append({"ticker": ticker, "market_cap": mc})
+                except Exception:
+                    records.append({"ticker": ticker, "market_cap": None})
+            mktcap_df = pd.DataFrame(records)
+            mktcap_df.to_csv(mktcap_cache, index=False)
+
+        small_tickers = mktcap_df[
+            mktcap_df["market_cap"].notna()
+            & (mktcap_df["market_cap"] <= max_market_cap)
+        ]["ticker"].tolist()
+        large_excluded = mktcap_df[
+            mktcap_df["market_cap"].notna()
+            & (mktcap_df["market_cap"] > max_market_cap)
+        ]
+        logger.info("Tickers under $%.0fB cap: %d / %d",
+                     max_market_cap / 1e9, len(small_tickers),
+                     len(mktcap_df))
+        if not large_excluded.empty:
+            logger.info("Excluded large-cap: %s",
+                        ", ".join(large_excluded["ticker"].tolist()))
+
+        matched = matched[matched["ticker"].isin(small_tickers)]
+        results["n_trials_under_cap"] = len(matched)
+        results["tickers_under_cap"] = small_tickers
+        results["tickers_excluded_large"] = large_excluded["ticker"].tolist() if not large_excluded.empty else []
 
     # Save the enriched dataset
     matched.to_csv(DATA_DIR / "trials_enriched.csv", index=False)
@@ -193,6 +248,12 @@ def print_summary(results: dict) -> None:
 
     print(f"\n  Raw trials fetched:           {results.get('n_trials_raw', 'N/A')}")
     print(f"  Trials with ticker match:     {results.get('n_trials_with_ticker', 'N/A')}")
+    if "n_trials_under_cap" in results:
+        print(f"  Trials under market cap:      {results['n_trials_under_cap']}")
+        print(f"  Tickers under cap:            {results.get('tickers_under_cap', [])}")
+        excluded = results.get("tickers_excluded_large", [])
+        if excluded:
+            print(f"  Excluded (large cap):         {excluded}")
     print(f"  Events with price data:       {results.get('n_events_with_prices', 'N/A')}")
 
     liq = results.get("liquidity_summary", {})
@@ -226,5 +287,5 @@ def print_summary(results: dict) -> None:
 
 
 if __name__ == "__main__":
-    max_trials = int(sys.argv[1]) if len(sys.argv) > 1 else 500
+    max_trials = int(sys.argv[1]) if len(sys.argv) > 1 else 1000
     run_full_pipeline(max_trials=max_trials)
