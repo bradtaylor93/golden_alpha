@@ -33,6 +33,11 @@ from trade_feasibility import (
     assess_liquidity,
     compute_strategy_returns,
     strategy_summary,
+    compute_conditional_strategy,
+    conditional_strategy_sweep,
+    compute_options_straddle_strategy,
+    straddle_strategy_summary,
+    straddle_strategy_sweep,
 )
 from false_positive_reduction import (
     compute_z_scores,
@@ -156,6 +161,41 @@ def run_full_pipeline(
     matched.to_csv(DATA_DIR / "trials_enriched.csv", index=False)
 
     # ---------------------------------------------------------------
+    # Step 2c: Load and merge PDUFA dates
+    # ---------------------------------------------------------------
+    pdufa_path = DATA_DIR / "pdufa_dates.csv"
+    if pdufa_path.exists():
+        logger.info("Loading PDUFA dates from %s", pdufa_path)
+        pdufa = load_pdufa_dates(str(pdufa_path))
+        if not pdufa.empty:
+            # Filter to tickers we care about (under cap, if applicable)
+            if "tickers_under_cap" in results:
+                pdufa = pdufa[pdufa["ticker"].isin(results["tickers_under_cap"])]
+
+            # Remove future/pending entries
+            pdufa = pdufa[pdufa["outcome"] != "pending"]
+
+            # Convert to same event format as trial data
+            pdufa_events = pdufa.rename(columns={
+                "pdufa_date": "results_first_post_date",
+            })[["ticker", "drug_name", "results_first_post_date"]].copy()
+            pdufa_events["nct_id"] = "PDUFA_" + pdufa_events["drug_name"].str.replace(" ", "_")
+            pdufa_events["source"] = "pdufa"
+            matched["source"] = "clinicaltrials"
+
+            combined = pd.concat([matched, pdufa_events], ignore_index=True)
+            results["n_pdufa_events"] = len(pdufa_events)
+            results["n_combined_events"] = len(combined)
+            logger.info("Added %d PDUFA events, total: %d",
+                         len(pdufa_events), len(combined))
+        else:
+            combined = matched.copy()
+            combined["source"] = "clinicaltrials"
+    else:
+        combined = matched.copy()
+        combined["source"] = "clinicaltrials"
+
+    # ---------------------------------------------------------------
     # Step 3: Build event-price dataset
     # ---------------------------------------------------------------
     price_cache = DATA_DIR / "event_prices.csv"
@@ -166,8 +206,8 @@ def run_full_pipeline(
             "event_date", "nearest_trading_date",
         ])
     else:
-        logger.info("Fetching price data for %d events ...", len(matched))
-        event_prices = build_event_price_dataset(matched)
+        logger.info("Fetching price data for %d events ...", len(combined))
+        event_prices = build_event_price_dataset(combined)
         if not event_prices.empty:
             event_prices.to_csv(price_cache, index=False)
 
@@ -205,13 +245,63 @@ def run_full_pipeline(
         ) if "tradable" in liquidity.columns else 0,
     }
 
+    # --- 5a: Naive long strategy (baseline) ---
     strat = compute_strategy_returns(classified, entry_window=5, exit_window=1)
     if not strat.empty:
-        results["strategy_5d_1d"] = strategy_summary(strat)
+        results["strategy_naive_long_5d_1d"] = strategy_summary(strat)
 
-    strat_10_3 = compute_strategy_returns(classified, entry_window=10, exit_window=3)
-    if not strat_10_3.empty:
-        results["strategy_10d_3d"] = strategy_summary(strat_10_3)
+    # --- 5b: Conditional momentum strategy ---
+    logger.info("Running conditional momentum strategy sweep ...")
+    cond_sweep = conditional_strategy_sweep(classified, cost_bps=30.0)
+    if not cond_sweep.empty:
+        cond_sweep.to_csv(OUTPUT_DIR / "conditional_strategy_sweep.csv", index=False)
+        best_cond = cond_sweep.loc[cond_sweep["sharpe_per_trade"].idxmax()]
+        results["conditional_strategy_best"] = best_cond.to_dict()
+
+        best_params = compute_conditional_strategy(
+            classified,
+            signal_window=int(best_cond["signal_window"]),
+            entry_window=int(best_cond["entry_window"]),
+            exit_window=int(best_cond["exit_window"]),
+            signal_threshold=best_cond["threshold_pct"] / 100,
+            cost_bps=30.0,
+        )
+        if not best_params.empty:
+            results["conditional_strategy_detail"] = strategy_summary(best_params)
+            best_params.to_csv(OUTPUT_DIR / "conditional_trades.csv", index=False)
+
+        # Also show the top 5 configurations
+        top5 = cond_sweep.nlargest(5, "sharpe_per_trade")[
+            ["signal_window", "entry_window", "exit_window", "threshold_pct",
+             "n_trades", "win_rate_pct", "mean_return_pct", "sharpe_per_trade",
+             "n_long", "n_short"]
+        ]
+        results["conditional_top5"] = top5.to_string(index=False)
+
+    # --- 5c: Options straddle strategy ---
+    logger.info("Running options straddle strategy sweep ...")
+    straddle_sweep = straddle_strategy_sweep(classified)
+    if not straddle_sweep.empty:
+        straddle_sweep.to_csv(OUTPUT_DIR / "straddle_strategy_sweep.csv", index=False)
+        best_straddle = straddle_sweep.loc[straddle_sweep["sharpe_per_trade"].idxmax()]
+        results["straddle_strategy_best"] = best_straddle.to_dict()
+
+        best_straddle_detail = compute_options_straddle_strategy(
+            classified,
+            entry_window=int(best_straddle["entry_window"]),
+            exit_window=int(best_straddle["exit_window"]),
+            implied_vol_annual=best_straddle["implied_vol"],
+            vol_crush_pct=best_straddle["vol_crush"],
+        )
+        if not best_straddle_detail.empty:
+            results["straddle_strategy_detail"] = straddle_strategy_summary(best_straddle_detail)
+
+        top5_straddle = straddle_sweep.nlargest(5, "sharpe_per_trade")[
+            ["entry_window", "exit_window", "implied_vol", "vol_crush",
+             "n_trades", "win_rate_pct", "mean_pnl_pct", "sharpe_per_trade",
+             "avg_straddle_cost_pct", "avg_realized_move_pct", "pct_exceeded_breakeven"]
+        ]
+        results["straddle_top5"] = top5_straddle.to_string(index=False)
 
     # ---------------------------------------------------------------
     # Step 6: False positive reduction
@@ -256,33 +346,72 @@ def print_summary(results: dict) -> None:
             print(f"  Excluded (large cap):         {excluded}")
     print(f"  Events with price data:       {results.get('n_events_with_prices', 'N/A')}")
 
+    if "n_pdufa_events" in results:
+        print(f"  PDUFA events added:           {results['n_pdufa_events']}")
+        print(f"  Combined events:              {results.get('n_combined_events', 'N/A')}")
+
     liq = results.get("liquidity_summary", {})
     print(f"\n  Tradable tickers:             {liq.get('n_tradable', 'N/A')} / {liq.get('n_tickers', 'N/A')}"
           f" ({liq.get('pct_tradable', 'N/A')}%)")
 
-    for key in ["strategy_5d_1d", "strategy_10d_3d"]:
-        strat = results.get(key, {})
-        if strat:
-            print(f"\n  Strategy ({key}):")
-            print(f"    Trades:      {strat.get('n_trades', 'N/A')}")
-            print(f"    Win rate:    {strat.get('win_rate_pct', 'N/A')}%")
-            print(f"    Mean return: {strat.get('mean_return_pct', 'N/A')}%")
-            print(f"    Sharpe/trade:{strat.get('sharpe_per_trade', 'N/A')}")
+    # Naive baseline
+    naive = results.get("strategy_naive_long_5d_1d", {})
+    if naive:
+        print(f"\n  STRATEGY 1: Naive Long (buy 5d before, sell 1d after)")
+        print(f"    Trades:      {naive.get('n_trades', 'N/A')}")
+        print(f"    Win rate:    {naive.get('win_rate_pct', 'N/A')}%")
+        print(f"    Mean return: {naive.get('mean_return_pct', 'N/A')}%")
+        print(f"    Sharpe/trade:{naive.get('sharpe_per_trade', 'N/A')}")
 
-    pa = results.get("price_analysis", {})
-    antic = pa.get("anticipation_stats")
-    if antic and isinstance(antic, dict):
-        print(f"\n  Pre-event anticipation:")
-        print(f"    Events analyzed:                  {antic.get('n_events', 'N/A')}")
-        print(f"    Same direction (pre/post):        {antic.get('pct_same_direction', 'N/A')}%")
-        print(f"    Big pre-move + same dir:          {antic.get('pct_pre_big_and_same_dir', 'N/A')}%")
-    elif antic:
-        print(f"\n  Pre-event anticipation:")
-        print(f"    {antic}")
+    # Conditional momentum
+    cond = results.get("conditional_strategy_detail", {})
+    cond_best = results.get("conditional_strategy_best", {})
+    if cond:
+        print(f"\n  STRATEGY 2: Conditional Momentum (best config)")
+        print(f"    Signal: {cond_best.get('signal_window', '?')}d drift, "
+              f"threshold: {cond_best.get('threshold_pct', '?')}%")
+        print(f"    Entry: {cond_best.get('entry_window', '?')}d before, "
+              f"Exit: {cond_best.get('exit_window', '?')}d after")
+        print(f"    Trades:      {cond.get('n_trades', 'N/A')} "
+              f"(L:{cond_best.get('n_long','?')} / S:{cond_best.get('n_short','?')})")
+        print(f"    Win rate:    {cond.get('win_rate_pct', 'N/A')}%")
+        print(f"    Mean return: {cond.get('mean_return_pct', 'N/A')}%")
+        print(f"    Sharpe/trade:{cond.get('sharpe_per_trade', 'N/A')}")
+
+    top5_cond = results.get("conditional_top5")
+    if top5_cond:
+        print(f"\n    Top 5 conditional configs:")
+        for line in str(top5_cond).split("\n"):
+            print(f"      {line}")
+
+    # Options straddle
+    straddle = results.get("straddle_strategy_detail", {})
+    straddle_best = results.get("straddle_strategy_best", {})
+    if straddle:
+        print(f"\n  STRATEGY 3: Options Straddle (best config)")
+        print(f"    Entry: {straddle_best.get('entry_window', '?')}d before, "
+              f"Exit: {straddle_best.get('exit_window', '?')}d after")
+        print(f"    IV: {straddle_best.get('implied_vol', '?')}, "
+              f"Vol crush: {straddle_best.get('vol_crush', '?')}")
+        print(f"    Trades:            {straddle.get('n_trades', 'N/A')}")
+        print(f"    Win rate:          {straddle.get('win_rate_pct', 'N/A')}%")
+        print(f"    Mean P&L:          {straddle.get('mean_pnl_pct', 'N/A')}%")
+        print(f"    Sharpe/trade:      {straddle.get('sharpe_per_trade', 'N/A')}")
+        print(f"    Avg straddle cost: {straddle.get('avg_straddle_cost_pct', 'N/A')}%")
+        print(f"    Avg realized move: {straddle.get('avg_realized_move_pct', 'N/A')}%")
+        print(f"    Exceeded breakeven:{straddle.get('pct_exceeded_breakeven', 'N/A')}%")
+
+    top5_straddle = results.get("straddle_top5")
+    if top5_straddle:
+        print(f"\n    Top 5 straddle configs:")
+        for line in str(top5_straddle).split("\n"):
+            print(f"      {line}")
 
     print("\n" + "=" * 70)
     print(f"  Full results: {OUTPUT_DIR / 'analysis_summary.json'}")
     print(f"  Scored events: {OUTPUT_DIR / 'scored_events.csv'}")
+    print(f"  Strategy sweeps: {OUTPUT_DIR / 'conditional_strategy_sweep.csv'}")
+    print(f"                   {OUTPUT_DIR / 'straddle_strategy_sweep.csv'}")
     print("=" * 70 + "\n")
 
 
