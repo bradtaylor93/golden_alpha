@@ -8,3 +8,4 @@ scipy>=1.11
 matplotlib>=3.7
 seaborn>=0.12
 tqdm>=4.65
+python-telegram-bot>=22.0
