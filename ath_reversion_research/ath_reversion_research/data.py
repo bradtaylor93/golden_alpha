@@ -61,6 +61,88 @@ def load_ohlcv_csv(path: str | Path, symbols: Iterable[str] | None = None) -> pd
     return frame
 
 
+def download_yahoo_ohlcv(
+    symbols: Iterable[str],
+    start: str,
+    end: str | None = None,
+    chunk_size: int = 25,
+) -> pd.DataFrame:
+    """Download adjusted daily OHLCV bars from Yahoo Finance.
+
+    Yahoo data is convenient for research replication, but it is not
+    point-in-time survivorship-free constituent data. Treat the output as a
+    first real-data pass, not as production-grade institutional data.
+    """
+
+    import yfinance as yf
+
+    normalized_symbols = [symbol.upper() for symbol in symbols]
+    chunks: list[pd.DataFrame] = []
+    for idx in range(0, len(normalized_symbols), chunk_size):
+        chunk = normalized_symbols[idx : idx + chunk_size]
+        raw = yf.download(
+            tickers=chunk,
+            start=start,
+            end=end,
+            auto_adjust=True,
+            progress=False,
+            group_by="ticker",
+            threads=True,
+        )
+        chunks.extend(_normalize_yahoo_download(raw, chunk))
+
+    if not chunks:
+        raise ValueError("Yahoo Finance returned no bars for the requested symbols")
+
+    frame = pd.concat(chunks, ignore_index=True)
+    frame = frame.dropna(subset=["open", "high", "low", "close"])
+    return frame.sort_values(["symbol", "date"]).reset_index(drop=True)
+
+
+def _normalize_yahoo_download(raw: pd.DataFrame, symbols: list[str]) -> list[pd.DataFrame]:
+    """Convert yfinance's wide output into the package's long OHLCV schema."""
+
+    frames: list[pd.DataFrame] = []
+    if raw.empty:
+        return frames
+
+    if isinstance(raw.columns, pd.MultiIndex):
+        ticker_level = 0 if raw.columns.names[0] in {"Ticker", "Symbols"} else 1
+        available = set(raw.columns.get_level_values(ticker_level))
+        for symbol in symbols:
+            if symbol not in available:
+                continue
+            try:
+                symbol_frame = raw[symbol] if ticker_level == 0 else raw.xs(symbol, axis=1, level=ticker_level)
+            except KeyError:
+                continue
+            normalized = _single_yahoo_frame(symbol_frame, symbol)
+            if not normalized.empty:
+                frames.append(normalized)
+        return frames
+
+    if len(symbols) == 1:
+        normalized = _single_yahoo_frame(raw, symbols[0])
+        if not normalized.empty:
+            frames.append(normalized)
+    return frames
+
+
+def _single_yahoo_frame(frame: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    rename = {column: str(column).lower() for column in frame.columns}
+    out = frame.rename(columns=rename).reset_index()
+    date_column = "date" if "date" in out.columns else out.columns[0]
+    out = out.rename(columns={date_column: "date"})
+    required = ["date", "open", "high", "low", "close", "volume"]
+    missing = sorted(set(required) - set(out.columns))
+    if missing:
+        return pd.DataFrame(columns=REQUIRED_COLUMNS)
+    out = out.loc[:, required].copy()
+    out["symbol"] = symbol
+    out["date"] = pd.to_datetime(out["date"]).dt.tz_localize(None)
+    return out.loc[:, REQUIRED_COLUMNS]
+
+
 def quality_report(frame: pd.DataFrame) -> DataQualityReport:
     """Return lightweight quality checks for loaded bars."""
 

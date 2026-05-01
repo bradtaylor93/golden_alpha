@@ -23,7 +23,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run walk-forward OOS ATH dip and exponential reversion strategy tests."
     )
-    parser.add_argument("--data", required=True, help="Path to long-form OHLCV CSV data.")
+    parser.add_argument("--data", help="Path to long-form OHLCV CSV data.")
+    parser.add_argument(
+        "--download-yahoo",
+        action="store_true",
+        help="Download adjusted daily OHLCV bars from Yahoo Finance for selected universes.",
+    )
+    parser.add_argument("--start", default="2010-01-01", help="Download start date for Yahoo Finance.")
+    parser.add_argument("--end", default=None, help="Download end date for Yahoo Finance.")
     parser.add_argument("--output", default="ath_reversion_report", help="Directory for CSV report outputs.")
     parser.add_argument(
         "--universes",
@@ -42,7 +49,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     selected_symbols = symbols_for(args.universes)
-    bars = load_ohlcv_csv(args.data, selected_symbols)
+    if args.download_yahoo:
+        from .data import download_yahoo_ohlcv
+
+        bars = download_yahoo_ohlcv(selected_symbols, start=args.start, end=args.end)
+    elif args.data:
+        bars = load_ohlcv_csv(args.data, selected_symbols)
+    else:
+        raise SystemExit("Provide --data or use --download-yahoo.")
     report = quality_report(bars)
 
     config = BacktestConfig(

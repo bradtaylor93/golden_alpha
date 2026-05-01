@@ -17,12 +17,13 @@ performance broken out by broad market regimes.
 
 ```bash
 cd ath_reversion_research
-python -m pip install -e ".[dev]"
+python3 -m pip install -e ".[test]"
 ```
 
 ## Data format
 
-Provide one CSV in long-form daily OHLCV format:
+Either download adjusted daily OHLCV data from Yahoo Finance or provide one CSV
+in long-form daily OHLCV format:
 
 ```text
 date,symbol,open,high,low,close,volume
@@ -40,12 +41,27 @@ Static research universes are defined in
 
 ## Run
 
+Download the built-in universe samples and run the OOS research:
+
 ```bash
-python -m ath_reversion_research.cli \
+ath-reversion-backtest \
+  --download-yahoo \
+  --start 2010-01-01 \
+  --output reports/ath_reversion_real_data \
+  --universes high_market_cap_cross_asset lower_market_cap_under_10bn_sample \
+  --train-days 756 \
+  --test-days 126 \
+  --step-days 126 \
+  --cost-bps 10
+```
+
+Run against an existing local CSV:
+
+```bash
+ath-reversion-backtest \
   --data /path/to/daily_ohlcv.csv \
   --output reports/ath_reversion \
-  --universe high_market_cap_cross_asset \
-  --universe lower_market_cap_under_10bn_sample \
+  --universes high_market_cap_cross_asset lower_market_cap_under_10bn_sample \
   --train-days 756 \
   --test-days 126 \
   --step-days 126 \
