@@ -1,0 +1,76 @@
+# ATH Dip and Exponential Reversion Research
+
+Self-contained Python folder for testing two daily equity strategies:
+
+1. **ATH dip recovery long**: find stocks that reached a recent all-time high,
+   dipped, then started recovering; buy and sell on recovery, stop, target, or
+   timeout.
+2. **Exponential movement reversion short**: fit a rolling linear trend in log
+   price, flag exponential upside stretches, and short only after a confirmed
+   drop.
+
+The package runs expanding walk-forward out-of-sample tests with transaction
+costs, annualized return/std/Sharpe, average return and turnover statistics, and
+performance broken out by broad market regimes.
+
+## Install
+
+```bash
+cd ath_reversion_research
+python -m pip install -e ".[dev]"
+```
+
+## Data format
+
+Provide one CSV in long-form daily OHLCV format:
+
+```text
+date,symbol,open,high,low,close,volume
+2020-01-02,SPY,320.0,322.0,319.0,321.0,60000000
+2020-01-02,AAPL,74.0,75.0,73.5,74.8,100000000
+```
+
+Static research universes are defined in
+`ath_reversion_research/universes.py`:
+
+- liquid ETF and sector ETF sample,
+- high market-cap real-name companies,
+- lower market-cap sample intended to be validated against point-in-time market
+  caps before use in production research.
+
+## Run
+
+```bash
+python -m ath_reversion_research.cli \
+  --data /path/to/daily_ohlcv.csv \
+  --output reports/ath_reversion \
+  --universe high_market_cap_cross_asset \
+  --universe lower_market_cap_under_10bn_sample \
+  --train-days 756 \
+  --test-days 126 \
+  --step-days 126 \
+  --cost-bps 10
+```
+
+Outputs:
+
+- `positions.csv`: daily target positions and signal labels.
+- `returns.csv`: walk-forward OOS daily net returns after costs.
+- `folds.csv`: train/test date ranges.
+- `summary.csv`: Sharpe, return, std, average stats, turnover, drawdown.
+- `regime_summary.csv`: same statistics by market regime.
+
+## Methodology notes
+
+- Signals are generated causally from each asset's price history.
+- Positions are shifted by `execution_lag_days` before returns are applied.
+- Transaction costs are charged on absolute executed-position changes.
+- Portfolio gross exposure is capped and active positions are scaled equally.
+- Walk-forward folds use expanding training windows and non-overlapping or
+  stepped OOS windows.
+- Regimes are classified using SPY when present, otherwise an equal-weighted
+  close index from the supplied universe.
+
+This is a research harness, not investment advice. Production usage should add
+point-in-time constituent membership, delisting-aware prices, corporate-action
+validation, borrow/short constraints, liquidity filters, and richer slippage.

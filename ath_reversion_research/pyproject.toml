@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ath-reversion-research"
+version = "0.1.0"
+description = "Walk-forward research for ATH dip recovery and exponential reversion strategies."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+ath-reversion-backtest = "ath_reversion_research.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+

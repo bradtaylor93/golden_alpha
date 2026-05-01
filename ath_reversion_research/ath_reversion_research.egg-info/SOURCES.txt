@@ -1,0 +1,17 @@
+README.md
+pyproject.toml
+ath_reversion_research/__init__.py
+ath_reversion_research/backtester.py
+ath_reversion_research/cli.py
+ath_reversion_research/data.py
+ath_reversion_research/metrics.py
+ath_reversion_research/regimes.py
+ath_reversion_research/strategies.py
+ath_reversion_research/universes.py
+ath_reversion_research.egg-info/PKG-INFO
+ath_reversion_research.egg-info/SOURCES.txt
+ath_reversion_research.egg-info/dependency_links.txt
+ath_reversion_research.egg-info/entry_points.txt
+ath_reversion_research.egg-info/requires.txt
+ath_reversion_research.egg-info/top_level.txt
+tests/test_backtester.py
