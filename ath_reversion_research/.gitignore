@@ -5,3 +5,6 @@ __pycache__/
 ath_reversion_report/
 reports/**/positions.csv
 reports/**/returns.csv
+reports/**/daily_downloaded_bars.csv
+reports/**/hourly_downloaded_bars.csv
+reports/**/strategy_returns.csv

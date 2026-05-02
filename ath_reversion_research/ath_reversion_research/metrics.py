@@ -39,8 +39,12 @@ class PerformanceSummary:
         }
 
 
-def summarize_returns(returns: pd.Series, turnover: pd.Series | None = None) -> PerformanceSummary:
-    """Summarize daily returns with annualized and simple average statistics."""
+def summarize_returns(
+    returns: pd.Series,
+    turnover: pd.Series | None = None,
+    annualization: int = TRADING_DAYS,
+) -> PerformanceSummary:
+    """Summarize periodic returns with annualized and simple average statistics."""
 
     clean = returns.dropna().astype(float)
     if clean.empty:
@@ -48,9 +52,9 @@ def summarize_returns(returns: pd.Series, turnover: pd.Series | None = None) -> 
 
     equity = (1.0 + clean).cumprod()
     total_return = float(equity.iloc[-1] - 1.0)
-    years = max(len(clean) / TRADING_DAYS, 1.0 / TRADING_DAYS)
+    years = max(len(clean) / annualization, 1.0 / annualization)
     annual_return = float(equity.iloc[-1] ** (1.0 / years) - 1.0)
-    annual_std = float(clean.std(ddof=1) * np.sqrt(TRADING_DAYS)) if len(clean) > 1 else 0.0
+    annual_std = float(clean.std(ddof=1) * np.sqrt(annualization)) if len(clean) > 1 else 0.0
     sharpe = float(annual_return / annual_std) if annual_std > 0 else np.nan
     drawdown = equity / equity.cummax() - 1.0
     aligned_turnover = turnover.reindex(clean.index).fillna(0.0) if turnover is not None else pd.Series(0.0, index=clean.index)
