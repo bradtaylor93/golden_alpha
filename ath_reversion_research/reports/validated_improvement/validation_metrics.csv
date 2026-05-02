@@ -1,0 +1,3 @@
+selection_rule,portfolio,full_annual_return,full_sharpe,full_max_drawdown,validation_annual_return,validation_sharpe,validation_max_drawdown
+pre2022_max_sharpe_with_drawdown_penalty,sharpe_guarded_ml_growth_25,0.42029036828230515,1.6356504161735275,-0.22719883526508855,0.3094335003983075,1.264914321121975,-0.22360854661761254
+pre2022_return_sharpe_with_drawdown_penalty,asset_overlay_regime_target35,0.6019986104479587,1.593999343292892,-0.3293256149281689,0.4879830394801814,1.3365418915516698,-0.3068500779173672
