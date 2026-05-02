@@ -32,7 +32,7 @@ It is still a research result, not investment advice or a production trading app
 | equal_weight_core | 11.47% | 11.67% | 0.98 | -24.12% | 56.28% |
 | regime_switched_core | 13.87% | 14.53% | 0.95 | -27.50% | 56.34% |
 
-## 2022-2026 holdout check
+## 2022-2026 validation check
 
 | portfolio | annual_return | annual_std | sharpe | max_drawdown | hit_rate |
 | --- | --- | --- | --- | --- | --- |
@@ -76,8 +76,8 @@ It is still a research result, not investment advice or a production trading app
 - Full-sample annual std: 36.36%.
 - Full-sample Sharpe: 1.39.
 - Full-sample max drawdown: -44.02%.
-- Holdout annual return: 51.20%.
-- Holdout Sharpe: 1.41.
+- Validation annual return: 51.20%.
+- Validation Sharpe: 1.41.
 - Estimated next-year mean return: 52.52%.
 - Estimated next-year 5th/95th percentile: -22.66% / 151.75%.
 - Estimated probability of a negative next year: 15.6%.

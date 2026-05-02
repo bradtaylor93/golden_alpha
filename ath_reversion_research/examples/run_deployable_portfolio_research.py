@@ -6,7 +6,7 @@ real-data research runners, then:
 
 - keeps a small set of liquid, interpretable sleeves,
 - optimizes weights on an earlier train period,
-- evaluates the selected portfolio on a later holdout period,
+- evaluates the selected portfolio on the later 2022-2026 validation period,
 - applies causal volatility targeting and drawdown brake overlays,
 - estimates next-year performance with block bootstrap sampling.
 """
@@ -381,7 +381,7 @@ def _write_report(
             ]
         ),
         "",
-        "## 2022-2026 holdout check",
+        "## 2022-2026 validation check",
         "",
         _markdown_table(
             holdout[
@@ -408,8 +408,8 @@ def _write_report(
         f"- Full-sample annual std: {_pct(overlay['annual_std'])}.",
         f"- Full-sample Sharpe: {overlay['sharpe']:.2f}.",
         f"- Full-sample max drawdown: {_pct(overlay['max_drawdown'])}.",
-        f"- Holdout annual return: {_pct(overlay_holdout['annual_return'])}.",
-        f"- Holdout Sharpe: {overlay_holdout['sharpe']:.2f}.",
+        f"- Validation annual return: {_pct(overlay_holdout['annual_return'])}.",
+        f"- Validation Sharpe: {overlay_holdout['sharpe']:.2f}.",
         f"- Estimated next-year mean return: {_pct(overlay_forecast['expected_return'])}.",
         f"- Estimated next-year 5th/95th percentile: {_pct(overlay_forecast['p05_return'])} / {_pct(overlay_forecast['p95_return'])}.",
         f"- Estimated probability of a negative next year: {overlay_forecast['loss_probability']:.1%}.",

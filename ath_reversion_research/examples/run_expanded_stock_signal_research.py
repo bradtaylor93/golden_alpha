@@ -429,7 +429,7 @@ def _write_report(
         "",
         _markdown_table(combos.head(12)),
         "",
-        "## 2022-2026 holdout for top combinations",
+        "## 2022-2026 validation window for top combinations",
         "",
         _markdown_table(holdout.head(8)),
         "",
@@ -441,6 +441,7 @@ def _write_report(
         "",
         "- Broader stock breadth and continuous signal-strength sizing improved the return engine when used as an overlay and re-targeted to volatility.",
         "- The improvement is not a clean diversification win: the best expanded-stock strength sleeves remain correlated to the current ML growth engine.",
+        "- The 2022-2026 window is a validation window after repeated research iterations, not an untouched final holdout.",
         "- Market-neutral, bear-short, and reversal variants did not beat the return engine after costs.",
         "- The most useful result is better breadth/sizing for the momentum complex; genuinely unrelated variants were too weak after costs.",
     ]

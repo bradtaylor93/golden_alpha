@@ -94,6 +94,7 @@ def _walk_forward_ridge_predictions(
     target: pd.Series,
     alpha: float = 10.0,
     first_test_year: int = 2017,
+    embargo_days: int = 21,
 ) -> pd.Series:
     predictions: list[pd.Series] = []
     valid_target = target.dropna()
@@ -101,7 +102,11 @@ def _walk_forward_ridge_predictions(
         test_idx = features.index[features.index.year == year]
         if test_idx.empty:
             continue
-        train_idx = features.index[features.index < test_idx.min()].intersection(valid_target.index)
+        test_start_position = features.index.get_loc(test_idx.min())
+        if test_start_position < embargo_days:
+            continue
+        train_cutoff = features.index[test_start_position - embargo_days]
+        train_idx = features.index[features.index <= train_cutoff].intersection(valid_target.index)
         if len(train_idx) < 500:
             continue
         predictions.append(_ridge_predict(features.loc[train_idx], target.loc[train_idx], features.loc[test_idx], alpha))
@@ -178,12 +183,13 @@ def _write_report(summary: pd.DataFrame, holdout: pd.DataFrame, next_year: pd.Da
         "",
         "An expanding ridge model predicts 21-day forward return of the high-return asset-overlay portfolio from lagged SPY trend/volatility and portfolio state features.",
         "Predictions are converted to bounded exposure multipliers.  This is a simple auditable ML meta layer, not a black-box model.",
+        "Training uses a 21-trading-day purge/embargo before each test year so forward-return labels cannot overlap the validation year.",
         "",
         "## Full-sample comparison",
         "",
         _markdown_table(summary),
         "",
-        "## 2022-2026 holdout",
+        "## 2022-2026 validation window",
         "",
         _markdown_table(holdout),
         "",
@@ -193,14 +199,14 @@ def _write_report(summary: pd.DataFrame, holdout: pd.DataFrame, next_year: pd.Da
         "",
         "## Preferred ML variant",
         "",
-        "`ml_meta_scale_growth` is the best return/risk compromise.  The max variant has higher return but pushes drawdown beyond the already aggressive target.",
+        "`ml_meta_scale_growth` is the best return/risk compromise.  The max variant has higher return but pushes drawdown beyond the already aggressive target.  Training uses a 21-trading-day embargo so forward-return labels do not overlap the test year.",
         "",
         f"- Annual return: {_pct(best['annual_return'])}.",
         f"- Annual std: {_pct(best['annual_std'])}.",
         f"- Sharpe: {best['sharpe']:.2f}.",
         f"- Max drawdown: {_pct(best['max_drawdown'])}.",
-        f"- Holdout annual return: {_pct(best_holdout['annual_return'])}.",
-        f"- Holdout Sharpe: {best_holdout['sharpe']:.2f}.",
+        f"- Validation annual return: {_pct(best_holdout['annual_return'])}.",
+        f"- Validation Sharpe: {best_holdout['sharpe']:.2f}.",
         f"- Next-year expected return: {_pct(forecast['expected_return'])}.",
         f"- Next-year 5th/95th percentile: {_pct(forecast['p05_return'])} / {_pct(forecast['p95_return'])}.",
         f"- Estimated loss probability: {forecast['loss_probability']:.1%}.",
