@@ -9,6 +9,8 @@ from ath_reversion_research import (
     BacktestConfig,
     ExponentialReversionConfig,
     ExponentialReversionShortStrategy,
+    MovingAverageTouchConfig,
+    MovingAverageTouchStrategy,
     WalkForwardBacktester,
 )
 
@@ -96,3 +98,26 @@ def test_strategies_generate_nonzero_positions_on_synthetic_patterns() -> None:
 
     assert ath_positions["position"].abs().sum() > 0
     assert short_positions["position"].abs().sum() > 0
+
+
+def test_moving_average_touch_strategy_generates_positions() -> None:
+    bars = _synthetic_bars(days=420)
+    strategy = MovingAverageTouchStrategy(
+        MovingAverageTouchConfig(
+            moving_average_days=120,
+            touch_band_pct=0.03,
+            require_prior_above_days=10,
+            require_bounce_confirmation=True,
+            require_ma_rising=True,
+            max_hold_days=20,
+            name="ma_touch_test",
+        )
+    )
+
+    positions = strategy.generate_positions(bars)
+
+    assert strategy.name == "ma_touch_test"
+    assert positions["position"].abs().sum() > 0
+    assert {"enter", "hold", "exit", "flat", "insufficient_history"}.intersection(
+        set(positions["signal"])
+    )

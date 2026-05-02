@@ -8,6 +8,8 @@ Self-contained Python folder for testing two daily equity strategies:
 2. **Exponential movement reversion short**: fit a rolling linear trend in log
    price, flag exponential upside stretches, and short only after a confirmed
    drop.
+3. **200-day moving-average touch long**: buy stocks that pull back to their
+   200-day moving average, with optional bounce and trend-quality filters.
 
 The package runs expanding walk-forward out-of-sample tests with transaction
 costs, annualized return/std/Sharpe, average return and turnover statistics, and
@@ -75,6 +77,9 @@ Outputs:
 - `folds.csv`: train/test date ranges.
 - `summary.csv`: Sharpe, return, std, average stats, turnover, drawdown.
 - `regime_summary.csv`: same statistics by market regime.
+
+See `reports/MA200_REAL_DATA_RESULTS.md` for a real-data 200MA study across a
+99-symbol broad stock sample, including baseline and improved variants.
 
 ## Methodology notes
 

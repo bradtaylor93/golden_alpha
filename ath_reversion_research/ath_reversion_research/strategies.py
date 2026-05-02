@@ -36,6 +36,25 @@ class ExponentialReversionConfig:
     position_size: float = -1.0
 
 
+@dataclass(frozen=True)
+class MovingAverageTouchConfig:
+    """Parameters for buying stocks when they touch the 200-day moving average."""
+
+    moving_average_days: int = 200
+    touch_band_pct: float = 0.005
+    require_prior_above_days: int = 20
+    require_bounce_confirmation: bool = False
+    require_ma_rising: bool = False
+    ma_slope_lookback: int = 20
+    require_above_long_ma: bool = False
+    max_hold_days: int = 40
+    stop_loss_pct: float = 0.07
+    take_profit_pct: float = 0.10
+    exit_below_ma_pct: float = 0.02
+    position_size: float = 1.0
+    name: str = "ma200_touch"
+
+
 class Strategy(Protocol):
     """Protocol implemented by causal daily-position strategies."""
 
@@ -75,6 +94,18 @@ class ExponentialReversionShortStrategy:
 
     def generate_positions(self, bars: pd.DataFrame) -> pd.DataFrame:
         pieces = [_exponential_short_positions(group, self.config) for _, group in bars.groupby("symbol")]
+        return pd.concat(pieces, ignore_index=True) if pieces else _empty_positions()
+
+
+class MovingAverageTouchStrategy:
+    """Buy 200MA touches, optionally requiring bounce and trend confirmation."""
+
+    def __init__(self, config: MovingAverageTouchConfig | None = None) -> None:
+        self.config = config or MovingAverageTouchConfig()
+        self.name = self.config.name
+
+    def generate_positions(self, bars: pd.DataFrame) -> pd.DataFrame:
+        pieces = [_ma_touch_positions(group, self.config) for _, group in bars.groupby("symbol")]
         return pd.concat(pieces, ignore_index=True) if pieces else _empty_positions()
 
 
@@ -121,6 +152,88 @@ def _ath_dip_positions(group: pd.DataFrame, config: ATHDipRecoveryConfig) -> pd.
         trough = trough_since_ath.iloc[idx]
         recovering = np.isfinite(trough) and price >= trough * (1.0 + config.recovery_trigger_pct)
         if dipped and recovering:
+            in_trade = True
+            entry_price = float(price)
+            entry_idx = idx
+            positions.append(config.position_size)
+            signals.append("enter")
+        else:
+            positions.append(0.0)
+            signals.append("flat")
+
+    return pd.DataFrame(
+        {
+            "date": g["date"],
+            "symbol": g["symbol"],
+            "position": positions,
+            "signal": signals,
+        }
+    )
+
+
+def _ma_touch_positions(group: pd.DataFrame, config: MovingAverageTouchConfig) -> pd.DataFrame:
+    g = group.sort_values("date").reset_index(drop=True).copy()
+    close = g["close"].astype(float)
+    low = g["low"].astype(float)
+    high = g["high"].astype(float)
+    ma = close.rolling(
+        config.moving_average_days,
+        min_periods=max(50, config.moving_average_days // 2),
+    ).mean()
+    prior_above_ratio = (
+        (close.shift(1) > ma.shift(1))
+        .rolling(config.require_prior_above_days, min_periods=config.require_prior_above_days)
+        .mean()
+    )
+    ma_slope = ma / ma.shift(config.ma_slope_lookback) - 1.0
+
+    positions: list[float] = []
+    signals: list[str] = []
+    in_trade = False
+    entry_price = 0.0
+    entry_idx = -1
+
+    for idx, price in enumerate(close):
+        current_ma = ma.iloc[idx]
+        if not np.isfinite(price) or not np.isfinite(current_ma):
+            positions.append(0.0)
+            signals.append("insufficient_history")
+            continue
+
+        if in_trade:
+            pnl = price / entry_price - 1.0
+            holding_days = idx - entry_idx
+            stopped = pnl <= -config.stop_loss_pct
+            target_hit = pnl >= config.take_profit_pct
+            lost_ma = price <= current_ma * (1.0 - config.exit_below_ma_pct)
+            timed_out = holding_days >= config.max_hold_days
+            if stopped or target_hit or lost_ma or timed_out:
+                in_trade = False
+                positions.append(0.0)
+                signals.append("exit")
+            else:
+                positions.append(config.position_size)
+                signals.append("hold")
+            continue
+
+        touched = (
+            low.iloc[idx] <= current_ma * (1.0 + config.touch_band_pct)
+            and high.iloc[idx] >= current_ma * (1.0 - config.touch_band_pct)
+        )
+        had_prior_uptrend = prior_above_ratio.iloc[idx] >= 0.8
+        bounce_confirmed = price > current_ma and close.pct_change().iloc[idx] > 0.0
+        ma_rising = ma_slope.iloc[idx] > 0.0
+        above_long_ma = price >= current_ma
+
+        filters_pass = bool(touched and had_prior_uptrend)
+        if config.require_bounce_confirmation:
+            filters_pass = filters_pass and bool(bounce_confirmed)
+        if config.require_ma_rising:
+            filters_pass = filters_pass and bool(ma_rising)
+        if config.require_above_long_ma:
+            filters_pass = filters_pass and bool(above_long_ma)
+
+        if filters_pass:
             in_trade = True
             entry_price = float(price)
             entry_idx = idx
