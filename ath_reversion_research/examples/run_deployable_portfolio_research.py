@@ -26,6 +26,7 @@ REPORT_DIR = Path("ath_reversion_research/reports/deployable_portfolio")
 LAB_RETURNS = Path("ath_reversion_research/reports/strategy_lab_real_data/strategy_returns.csv")
 MA200_RETURNS = Path("ath_reversion_research/reports/ma200_real_data/returns.csv")
 ATH_RETURNS = Path("ath_reversion_research/reports/high_market_cap_real_data/returns.csv")
+UNRELATED_RETURNS = Path("ath_reversion_research/reports/unrelated_strategy_lab/daily_candidate_returns.csv")
 ANNUALIZATION = 252
 
 CORE_SLEEVES = {
@@ -97,6 +98,19 @@ def main() -> int:
         brake_drawdown=-0.15,
         brake_scale=0.65,
     )
+    if UNRELATED_RETURNS.exists():
+        unrelated = pd.read_csv(UNRELATED_RETURNS, parse_dates=["date"]).set_index("date")
+        asset_overlay = unrelated["daily_asset_abs_mom_252_top1"].reindex(growth_core.index).fillna(0.0)
+        portfolios["max_return_plus_asset_overlay"] = _vol_target(
+            growth_core + 0.25 * asset_overlay,
+            target_vol=0.35,
+            max_leverage=2.5,
+        )
+        portfolios["max_return_plus_asset_overlay_guarded"] = _drawdown_brake(
+            _vol_target(growth_core + 0.25 * asset_overlay, target_vol=0.35, max_leverage=2.5),
+            brake_drawdown=-0.15,
+            brake_scale=0.65,
+        )
     pd.DataFrame([growth_weights]).to_csv(REPORT_DIR / "growth_weights.csv", index=False)
 
     summary = _summaries(portfolios, sleeves.index, candidate)
@@ -326,9 +340,10 @@ def _write_report(
 ) -> None:
     deployable = summary[summary["portfolio"] == "deployable_guarded"].iloc[0]
     growth = summary[summary["portfolio"] == "max_return_35_target"].iloc[0]
-    growth_guarded = summary[summary["portfolio"] == "max_return_35_guarded"].iloc[0]
-    growth_holdout = holdout[holdout["portfolio"] == "max_return_35_target"].iloc[0]
-    growth_forecast = next_year[next_year["portfolio"] == "max_return_35_target"].iloc[0]
+    overlay = summary[summary["portfolio"] == "max_return_plus_asset_overlay"].iloc[0]
+    overlay_guarded = summary[summary["portfolio"] == "max_return_plus_asset_overlay_guarded"].iloc[0]
+    overlay_holdout = holdout[holdout["portfolio"] == "max_return_plus_asset_overlay"].iloc[0]
+    overlay_forecast = next_year[next_year["portfolio"] == "max_return_plus_asset_overlay"].iloc[0]
 
     lines = [
         "# Deployable Multi-Strategy Portfolio Research",
@@ -387,27 +402,30 @@ def _write_report(
         "",
         "## High-return deployment candidate",
         "",
-        "`max_return_35_target` is the high-return candidate. It drops the static bear hedge that reduced returns and concentrates in the strongest daily engines: 70% large-cap relative strength, 20% large-cap 12-1 momentum, and 10% ATH dip recovery, then applies a 35% causal volatility target.",
+        "`max_return_plus_asset_overlay` is now the high-return candidate. It keeps the 70% large-cap relative strength / 20% large-cap 12-1 momentum / 10% ATH dip recovery core, overlays 25% asset-class absolute momentum, and re-targets the combined sleeve to 35% annualized volatility.",
         "",
-        f"- Full-sample annual return: {_pct(growth['annual_return'])}.",
-        f"- Full-sample annual std: {_pct(growth['annual_std'])}.",
-        f"- Full-sample Sharpe: {growth['sharpe']:.2f}.",
-        f"- Full-sample max drawdown: {_pct(growth['max_drawdown'])}.",
-        f"- Holdout annual return: {_pct(growth_holdout['annual_return'])}.",
-        f"- Holdout Sharpe: {growth_holdout['sharpe']:.2f}.",
-        f"- Estimated next-year mean return: {_pct(growth_forecast['expected_return'])}.",
-        f"- Estimated next-year 5th/95th percentile: {_pct(growth_forecast['p05_return'])} / {_pct(growth_forecast['p95_return'])}.",
-        f"- Estimated probability of a negative next year: {growth_forecast['loss_probability']:.1%}.",
+        f"- Full-sample annual return: {_pct(overlay['annual_return'])}.",
+        f"- Full-sample annual std: {_pct(overlay['annual_std'])}.",
+        f"- Full-sample Sharpe: {overlay['sharpe']:.2f}.",
+        f"- Full-sample max drawdown: {_pct(overlay['max_drawdown'])}.",
+        f"- Holdout annual return: {_pct(overlay_holdout['annual_return'])}.",
+        f"- Holdout Sharpe: {overlay_holdout['sharpe']:.2f}.",
+        f"- Estimated next-year mean return: {_pct(overlay_forecast['expected_return'])}.",
+        f"- Estimated next-year 5th/95th percentile: {_pct(overlay_forecast['p05_return'])} / {_pct(overlay_forecast['p95_return'])}.",
+        f"- Estimated probability of a negative next year: {overlay_forecast['loss_probability']:.1%}.",
         "",
-        "`max_return_35_guarded` is a slightly safer high-return variant using a trailing drawdown brake. It reduces annual return to "
-        f"{_pct(growth_guarded['annual_return'])} and max drawdown to {_pct(growth_guarded['max_drawdown'])}.",
+        "`max_return_plus_asset_overlay_guarded` is a safer high-return variant using a trailing drawdown brake. It reduces annual return to "
+        f"{_pct(overlay_guarded['annual_return'])} and max drawdown to {_pct(overlay_guarded['max_drawdown'])}.",
+        "",
+        "`max_return_35_target` remains the stock-only high-return baseline: "
+        f"{_pct(growth['annual_return'])} annual return, {growth['sharpe']:.2f} Sharpe, and {_pct(growth['max_drawdown'])} max drawdown.",
         "",
         "`deployable_guarded` remains the conservative version: "
         f"{_pct(deployable['annual_return'])} annual return, {deployable['sharpe']:.2f} Sharpe, and {_pct(deployable['max_drawdown'])} max drawdown.",
         "",
         "## Safety controls before live use",
         "",
-        "- Treat `max_return_35_target` as aggressive: it targets much higher return by accepting 30%+ annualized volatility and 40% drawdown risk.",
+        "- Treat `max_return_plus_asset_overlay` as aggressive: it targets much higher return by accepting 35%+ annualized volatility and 40% drawdown risk.",
         "- Trade liquid large-cap/ETF sleeves first; keep lower-cap and hourly sleeves out of the production portfolio until validated on a better intraday data source.",
         "- Enforce max gross exposure, max single-sleeve weight, borrow availability for short sleeves, and daily loss limits.",
         "- Recompute signals after market close; execute with limit/VWAP-aware orders rather than assuming close-to-close fills.",

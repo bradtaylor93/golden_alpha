@@ -22,6 +22,8 @@ It is still a research result, not investment advice or a production trading app
 | max_return_35_target | 50.07% | 35.45% | 1.41 | -43.69% | 57.09% |
 | growth_30_target | 44.12% | 31.33% | 1.41 | -38.53% | 57.09% |
 | growth_30_guarded | 41.79% | 29.71% | 1.41 | -35.94% | 57.09% |
+| max_return_plus_asset_overlay_guarded | 47.86% | 34.22% | 1.40 | -34.96% | 57.30% |
+| max_return_plus_asset_overlay | 50.42% | 36.36% | 1.39 | -44.02% | 57.30% |
 | deployable_guarded | 15.30% | 11.68% | 1.31 | -20.43% | 57.51% |
 | aggressive_vol_target_16 | 17.78% | 13.68% | 1.30 | -23.10% | 57.51% |
 | optimized_vol_target_12 | 15.68% | 12.11% | 1.29 | -19.09% | 57.51% |
@@ -34,6 +36,8 @@ It is still a research result, not investment advice or a production trading app
 
 | portfolio | annual_return | annual_std | sharpe | max_drawdown | hit_rate |
 | --- | --- | --- | --- | --- | --- |
+| max_return_plus_asset_overlay | 51.20% | 36.20% | 1.41 | -36.40% | 55.80% |
+| max_return_plus_asset_overlay_guarded | 45.86% | 34.17% | 1.34 | -29.75% | 55.80% |
 | growth_30_target | 35.47% | 31.23% | 1.14 | -34.92% | 54.33% |
 | max_return_35_target | 40.70% | 36.07% | 1.13 | -39.59% | 54.33% |
 | max_return_35_guarded | 37.50% | 33.65% | 1.11 | -40.55% | 54.33% |
@@ -50,6 +54,8 @@ It is still a research result, not investment advice or a production trading app
 
 | portfolio | expected_return | median_return | p05_return | p25_return | p75_return | p95_return | loss_probability |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| max_return_plus_asset_overlay | 52.52% | 45.36% | -22.66% | 13.24% | 83.21% | 151.75% | 15.58% |
+| max_return_plus_asset_overlay_guarded | 48.39% | 40.70% | -20.29% | 11.88% | 76.37% | 143.15% | 15.86% |
 | max_return_35_target | 47.99% | 40.98% | -23.34% | 11.03% | 76.76% | 143.54% | 16.75% |
 | max_return_35_guarded | 44.58% | 37.39% | -22.29% | 9.58% | 71.35% | 135.73% | 17.29% |
 | growth_30_target | 40.08% | 34.84% | -21.02% | 8.83% | 65.03% | 119.42% | 17.15% |
@@ -64,25 +70,27 @@ It is still a research result, not investment advice or a production trading app
 
 ## High-return deployment candidate
 
-`max_return_35_target` is the high-return candidate. It drops the static bear hedge that reduced returns and concentrates in the strongest daily engines: 70% large-cap relative strength, 20% large-cap 12-1 momentum, and 10% ATH dip recovery, then applies a 35% causal volatility target.
+`max_return_plus_asset_overlay` is now the high-return candidate. It keeps the 70% large-cap relative strength / 20% large-cap 12-1 momentum / 10% ATH dip recovery core, overlays 25% asset-class absolute momentum, and re-targets the combined sleeve to 35% annualized volatility.
 
-- Full-sample annual return: 50.07%.
-- Full-sample annual std: 35.45%.
-- Full-sample Sharpe: 1.41.
-- Full-sample max drawdown: -43.69%.
-- Holdout annual return: 40.70%.
-- Holdout Sharpe: 1.13.
-- Estimated next-year mean return: 47.99%.
-- Estimated next-year 5th/95th percentile: -23.34% / 143.54%.
-- Estimated probability of a negative next year: 16.8%.
+- Full-sample annual return: 50.42%.
+- Full-sample annual std: 36.36%.
+- Full-sample Sharpe: 1.39.
+- Full-sample max drawdown: -44.02%.
+- Holdout annual return: 51.20%.
+- Holdout Sharpe: 1.41.
+- Estimated next-year mean return: 52.52%.
+- Estimated next-year 5th/95th percentile: -22.66% / 151.75%.
+- Estimated probability of a negative next year: 15.6%.
 
-`max_return_35_guarded` is a slightly safer high-return variant using a trailing drawdown brake. It reduces annual return to 47.51% and max drawdown to -41.69%.
+`max_return_plus_asset_overlay_guarded` is a safer high-return variant using a trailing drawdown brake. It reduces annual return to 47.86% and max drawdown to -34.96%.
+
+`max_return_35_target` remains the stock-only high-return baseline: 50.07% annual return, 1.41 Sharpe, and -43.69% max drawdown.
 
 `deployable_guarded` remains the conservative version: 15.30% annual return, 1.31 Sharpe, and -20.43% max drawdown.
 
 ## Safety controls before live use
 
-- Treat `max_return_35_target` as aggressive: it targets much higher return by accepting 30%+ annualized volatility and 40% drawdown risk.
+- Treat `max_return_plus_asset_overlay` as aggressive: it targets much higher return by accepting 35%+ annualized volatility and 40% drawdown risk.
 - Trade liquid large-cap/ETF sleeves first; keep lower-cap and hourly sleeves out of the production portfolio until validated on a better intraday data source.
 - Enforce max gross exposure, max single-sleeve weight, borrow availability for short sleeves, and daily loss limits.
 - Recompute signals after market close; execute with limit/VWAP-aware orders rather than assuming close-to-close fills.
