@@ -79,6 +79,25 @@ def main() -> int:
         brake_drawdown=-0.10,
         brake_scale=0.60,
     )
+    growth_weights = {
+        "large_cap_rs_126d": 0.70,
+        "large_cap_mom_12_1": 0.20,
+        "ath_dip_recovery": 0.10,
+    }
+    growth_core = _portfolio_returns(sleeves, growth_weights)
+    portfolios["growth_30_target"] = _vol_target(growth_core, target_vol=0.30, max_leverage=2.5)
+    portfolios["growth_30_guarded"] = _drawdown_brake(
+        _vol_target(growth_core, target_vol=0.30, max_leverage=2.5),
+        brake_drawdown=-0.15,
+        brake_scale=0.65,
+    )
+    portfolios["max_return_35_target"] = _vol_target(growth_core, target_vol=0.35, max_leverage=2.5)
+    portfolios["max_return_35_guarded"] = _drawdown_brake(
+        _vol_target(growth_core, target_vol=0.35, max_leverage=2.5),
+        brake_drawdown=-0.15,
+        brake_scale=0.65,
+    )
+    pd.DataFrame([growth_weights]).to_csv(REPORT_DIR / "growth_weights.csv", index=False)
 
     summary = _summaries(portfolios, sleeves.index, candidate)
     holdout_summary = _holdout_summaries(portfolios, holdout.index)
@@ -306,8 +325,10 @@ def _write_report(
     contribution: pd.DataFrame,
 ) -> None:
     deployable = summary[summary["portfolio"] == "deployable_guarded"].iloc[0]
-    deployable_holdout = holdout[holdout["portfolio"] == "deployable_guarded"].iloc[0]
-    deployable_forecast = next_year[next_year["portfolio"] == "deployable_guarded"].iloc[0]
+    growth = summary[summary["portfolio"] == "max_return_35_target"].iloc[0]
+    growth_guarded = summary[summary["portfolio"] == "max_return_35_guarded"].iloc[0]
+    growth_holdout = holdout[holdout["portfolio"] == "max_return_35_target"].iloc[0]
+    growth_forecast = next_year[next_year["portfolio"] == "max_return_35_target"].iloc[0]
 
     lines = [
         "# Deployable Multi-Strategy Portfolio Research",
@@ -364,22 +385,29 @@ def _write_report(
         "",
         _markdown_table(next_year),
         "",
-        "## Recommended deployment candidate",
+        "## High-return deployment candidate",
         "",
-        "`deployable_guarded` is the preferred candidate because it keeps most of the optimized core's Sharpe while reducing realized volatility with a causal 12% vol target and a trailing-drawdown brake.",
+        "`max_return_35_target` is the high-return candidate. It drops the static bear hedge that reduced returns and concentrates in the strongest daily engines: 70% large-cap relative strength, 20% large-cap 12-1 momentum, and 10% ATH dip recovery, then applies a 35% causal volatility target.",
         "",
-        f"- Full-sample annual return: {_pct(deployable['annual_return'])}.",
-        f"- Full-sample annual std: {_pct(deployable['annual_std'])}.",
-        f"- Full-sample Sharpe: {deployable['sharpe']:.2f}.",
-        f"- Full-sample max drawdown: {_pct(deployable['max_drawdown'])}.",
-        f"- Holdout annual return: {_pct(deployable_holdout['annual_return'])}.",
-        f"- Holdout Sharpe: {deployable_holdout['sharpe']:.2f}.",
-        f"- Estimated next-year mean return: {_pct(deployable_forecast['expected_return'])}.",
-        f"- Estimated next-year 5th/95th percentile: {_pct(deployable_forecast['p05_return'])} / {_pct(deployable_forecast['p95_return'])}.",
-        f"- Estimated probability of a negative next year: {deployable_forecast['loss_probability']:.1%}.",
+        f"- Full-sample annual return: {_pct(growth['annual_return'])}.",
+        f"- Full-sample annual std: {_pct(growth['annual_std'])}.",
+        f"- Full-sample Sharpe: {growth['sharpe']:.2f}.",
+        f"- Full-sample max drawdown: {_pct(growth['max_drawdown'])}.",
+        f"- Holdout annual return: {_pct(growth_holdout['annual_return'])}.",
+        f"- Holdout Sharpe: {growth_holdout['sharpe']:.2f}.",
+        f"- Estimated next-year mean return: {_pct(growth_forecast['expected_return'])}.",
+        f"- Estimated next-year 5th/95th percentile: {_pct(growth_forecast['p05_return'])} / {_pct(growth_forecast['p95_return'])}.",
+        f"- Estimated probability of a negative next year: {growth_forecast['loss_probability']:.1%}.",
+        "",
+        "`max_return_35_guarded` is a slightly safer high-return variant using a trailing drawdown brake. It reduces annual return to "
+        f"{_pct(growth_guarded['annual_return'])} and max drawdown to {_pct(growth_guarded['max_drawdown'])}.",
+        "",
+        "`deployable_guarded` remains the conservative version: "
+        f"{_pct(deployable['annual_return'])} annual return, {deployable['sharpe']:.2f} Sharpe, and {_pct(deployable['max_drawdown'])} max drawdown.",
         "",
         "## Safety controls before live use",
         "",
+        "- Treat `max_return_35_target` as aggressive: it targets much higher return by accepting 30%+ annualized volatility and 40% drawdown risk.",
         "- Trade liquid large-cap/ETF sleeves first; keep lower-cap and hourly sleeves out of the production portfolio until validated on a better intraday data source.",
         "- Enforce max gross exposure, max single-sleeve weight, borrow availability for short sleeves, and daily loss limits.",
         "- Recompute signals after market close; execute with limit/VWAP-aware orders rather than assuming close-to-close fills.",
