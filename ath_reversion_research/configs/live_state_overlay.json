@@ -1,0 +1,27 @@
+{
+  "start": "2010-01-01",
+  "portfolio_value": 100000,
+  "stock_symbols_file": "ath_reversion_research/reports/expanded_stock_signals/downloaded_symbols.csv",
+  "max_gross_exposure": 1.75,
+  "max_single_name_weight": 0.08,
+  "min_trade_value": 100,
+  "stock_top_n": 30,
+  "asset_top_n": 1,
+  "target_vol": 0.40,
+  "max_leverage": 2.0,
+  "asset_symbols": ["SPY", "TLT", "GLD", "XLP", "XLU", "XLV", "XLE", "XLF", "XLK", "XLI", "XLY"],
+  "sleeve_weights": {
+    "stock_rs_126": 0.55,
+    "stock_mom_12_1": 0.25,
+    "ath_dip_recovery": 0.10,
+    "asset_abs_mom": 0.10
+  },
+  "state_overlay": {
+    "breadth_low_threshold": 0.3770491803278688,
+    "breadth_high_threshold": 0.5081967213114754,
+    "spy_vol_high_threshold": 0.15456650250069123,
+    "low_breadth_scale": 0.70,
+    "high_breadth_scale": 1.45,
+    "high_vol_scale": 0.70
+  }
+}

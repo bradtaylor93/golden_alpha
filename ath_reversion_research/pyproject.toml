@@ -18,6 +18,8 @@ test = ["pytest"]
 
 [project.scripts]
 ath-reversion-backtest = "ath_reversion_research.cli:main"
+ath-live-deploy = "ath_reversion_research.live_deploy:main"
+ath-live-signals = "ath_reversion_research.live_deploy:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

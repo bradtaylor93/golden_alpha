@@ -1,0 +1,13 @@
+{
+  "as_of": "2026-05-01",
+  "gross_exposure": 1.7499999999999998,
+  "net_exposure": 1.7499999999999998,
+  "max_abs_weight": 0.05599399805434621,
+  "active_positions": 73,
+  "state_scale": 1.45,
+  "vol_scale": 2.0,
+  "final_scale": 2.9,
+  "breadth_20d": 0.5911949685534591,
+  "spy_vol_21d": 0.11686761085238313,
+  "warnings": []
+}
