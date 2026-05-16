@@ -55,6 +55,20 @@ def main() -> int:
             base_weight=0.50,
     )
     targets = dict(base_targets)
+    corr_penalized_05 = _correlation_penalty_weights(
+        close,
+        base_targets["base_plus_deviation_overlay"],
+        lookback=63,
+        penalty_strength=0.5,
+    )
+    corr_penalized_10 = _correlation_penalty_weights(
+        close,
+        base_targets["base_plus_deviation_overlay"],
+        lookback=63,
+        penalty_strength=1.0,
+    )
+    targets["base_plus_deviation_corr_penalty_05"] = corr_penalized_05
+    targets["base_plus_deviation_corr_penalty_10"] = corr_penalized_10
     braked = _drawdown_brake_weights(
         close,
         base_targets["base_plus_deviation_overlay"],
@@ -63,6 +77,14 @@ def main() -> int:
     )
     targets["base_plus_deviation_brake_vt35"] = _vol_target_weights(close, braked, target_vol=0.35, max_leverage=1.6)
     targets["base_plus_deviation_brake_vt30"] = _vol_target_weights(close, braked, target_vol=0.30, max_leverage=1.6)
+    corr_braked = _drawdown_brake_weights(
+        close,
+        corr_penalized_05,
+        brake_drawdown=-0.12,
+        brake_scale=0.60,
+    )
+    targets["corr_penalty_05_brake_vt35"] = _vol_target_weights(close, corr_braked, target_vol=0.35, max_leverage=1.6)
+    targets["corr_penalty_05_brake_vt30"] = _vol_target_weights(close, corr_braked, target_vol=0.30, max_leverage=1.6)
 
     returns = {}
     turnovers = {}
@@ -175,6 +197,42 @@ def _portfolio_returns(close: pd.DataFrame, targets: pd.DataFrame) -> tuple[pd.S
     return net, turnover
 
 
+def _correlation_penalty_weights(
+    close: pd.DataFrame,
+    targets: pd.DataFrame,
+    lookback: int,
+    penalty_strength: float,
+) -> pd.DataFrame:
+    """Downweight active holdings with high trailing average cohort correlation."""
+
+    returns = close.pct_change()
+    penalized = pd.DataFrame(0.0, index=targets.index, columns=targets.columns)
+    for idx, date in enumerate(targets.index):
+        weights = targets.loc[date]
+        active = weights[weights.abs() > 0.0]
+        if active.empty:
+            continue
+        if idx < lookback or len(active) == 1:
+            penalized.loc[date, active.index] = active
+            continue
+        history = returns.loc[:date, active.index].tail(lookback).dropna(how="all")
+        corr = history.corr().abs().fillna(0.0)
+        if corr.empty:
+            penalized.loc[date, active.index] = active
+            continue
+        if len(corr) > 1:
+            avg_corr = (corr.sum(axis=1) - 1.0) / (len(corr) - 1)
+        else:
+            avg_corr = pd.Series(0.0, index=active.index)
+        penalty = 1.0 / (1.0 + penalty_strength * avg_corr.reindex(active.index).fillna(0.0))
+        adjusted = active * penalty
+        gross = adjusted.abs().sum()
+        if gross > 0.0:
+            adjusted = adjusted / gross
+        penalized.loc[date, adjusted.index] = adjusted
+    return penalized.fillna(0.0)
+
+
 def _drawdown_brake_weights(
     close: pd.DataFrame,
     targets: pd.DataFrame,
@@ -254,6 +312,7 @@ def _write_report(summary: pd.DataFrame, yearly: pd.DataFrame, signals: pd.DataF
         "",
         "- The best deviance variant is a blend: keep half the static top-quintile basket and allocate half to high-ranked names lagging their cohort.",
         "- That blend did not increase raw return versus the static top-quintile basket, but it improved Sharpe, hit rate, volatility, and max drawdown.",
+        "- Correlation-penalty variants downweight names with high trailing average correlation to the active basket; this is causal because target weights trade the next day.",
         "- Adding a causal drawdown brake and volatility target to the deviance blend produced the strongest return/Sharpe tradeoff in this short sample.",
         "- Pure recent-dip buying performed poorly, so the annual prediction rank must remain the anchor.",
         "- The sample is short and still based on current S&P 500 membership.",
