@@ -42,18 +42,27 @@ def main() -> int:
     prices = download_yahoo_ohlcv(symbols, start="2024-01-01", chunk_size=25)
     close = prices.pivot(index="date", columns="symbol", values="close").sort_index()
 
-    targets = {
+    base_targets = {
         "baseline_top_quintile_equal": _static_top_quantile(signals, close, top_frac=0.20),
         "deviation_pullback_equal": _deviation_targets(signals, close, top_frac=0.30, mode="pullback_equal"),
         "deviation_weighted": _deviation_targets(signals, close, top_frac=0.40, mode="deviation_weighted"),
         "prediction_x_deviation_weighted": _deviation_targets(signals, close, top_frac=0.40, mode="prediction_x_deviation"),
         "recent_dip_high_rank": _deviation_targets(signals, close, top_frac=0.30, mode="recent_dip"),
-        "base_plus_deviation_overlay": _blend_targets(
+    }
+    base_targets["base_plus_deviation_overlay"] = _blend_targets(
             _static_top_quantile(signals, close, top_frac=0.20),
             _deviation_targets(signals, close, top_frac=0.40, mode="prediction_x_deviation"),
             base_weight=0.50,
-        ),
-    }
+    )
+    targets = dict(base_targets)
+    braked = _drawdown_brake_weights(
+        close,
+        base_targets["base_plus_deviation_overlay"],
+        brake_drawdown=-0.12,
+        brake_scale=0.60,
+    )
+    targets["base_plus_deviation_brake_vt35"] = _vol_target_weights(close, braked, target_vol=0.35, max_leverage=1.6)
+    targets["base_plus_deviation_brake_vt30"] = _vol_target_weights(close, braked, target_vol=0.30, max_leverage=1.6)
 
     returns = {}
     turnovers = {}
@@ -166,6 +175,34 @@ def _portfolio_returns(close: pd.DataFrame, targets: pd.DataFrame) -> tuple[pd.S
     return net, turnover
 
 
+def _drawdown_brake_weights(
+    close: pd.DataFrame,
+    targets: pd.DataFrame,
+    brake_drawdown: float,
+    brake_scale: float,
+    lookback: int = 63,
+) -> pd.DataFrame:
+    returns, _turnover = _portfolio_returns(close, targets)
+    equity = (1.0 + returns).cumprod()
+    trailing_drawdown = equity / equity.rolling(lookback, min_periods=20).max() - 1.0
+    scale = pd.Series(1.0, index=targets.index)
+    scale[trailing_drawdown.shift(1) <= brake_drawdown] = brake_scale
+    return targets.mul(scale, axis=0)
+
+
+def _vol_target_weights(
+    close: pd.DataFrame,
+    targets: pd.DataFrame,
+    target_vol: float,
+    max_leverage: float,
+    lookback: int = 63,
+) -> pd.DataFrame:
+    returns, _turnover = _portfolio_returns(close, targets)
+    realized_vol = returns.rolling(lookback, min_periods=20).std().shift(1) * np.sqrt(252)
+    scale = (target_vol / realized_vol).clip(lower=0.20, upper=max_leverage).fillna(0.75)
+    return targets.mul(scale, axis=0)
+
+
 def _summary(returns: pd.DataFrame, turnover: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for name in returns:
@@ -217,6 +254,7 @@ def _write_report(summary: pd.DataFrame, yearly: pd.DataFrame, signals: pd.DataF
         "",
         "- The best deviance variant is a blend: keep half the static top-quintile basket and allocate half to high-ranked names lagging their cohort.",
         "- That blend did not increase raw return versus the static top-quintile basket, but it improved Sharpe, hit rate, volatility, and max drawdown.",
+        "- Adding a causal drawdown brake and volatility target to the deviance blend produced the strongest return/Sharpe tradeoff in this short sample.",
         "- Pure recent-dip buying performed poorly, so the annual prediction rank must remain the anchor.",
         "- The sample is short and still based on current S&P 500 membership.",
     ]
