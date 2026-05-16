@@ -46,6 +46,12 @@ VALUATION_FEATURES = [
     "growth_to_sales_multiple",
 ]
 BASE_FEATURES = aligned.FINANCIAL_FEATURES + aligned.PRICE_FEATURES
+SECTOR_DUMMY_FEATURES = [f"sector_dummy_{idx}" for idx in range(len(SECTOR_ETF))]
+SECTOR_INTERACTION_FEATURES = [
+    f"{feature}_x_{dummy}"
+    for dummy in SECTOR_DUMMY_FEATURES
+    for feature in ["revenue_growth_yoy", "operating_margin", "fcf_margin", "debt_to_assets", "trailing_6m_return"]
+]
 
 EXPERIMENTS = [
     ("baseline_raw_return", "raw_return", BASE_FEATURES),
@@ -57,6 +63,9 @@ EXPERIMENTS = [
     ("spy_excess_raw_return", "spy_excess_return", BASE_FEATURES + VALUATION_FEATURES),
     ("sector_excess_raw_return", "sector_excess_return", BASE_FEATURES + VALUATION_FEATURES),
     ("sector_excess_rank_target", "sector_excess_rank_target", BASE_FEATURES + VALUATION_FEATURES),
+    ("sector_dummy_raw_return", "raw_return", BASE_FEATURES + VALUATION_FEATURES + SECTOR_DUMMY_FEATURES),
+    ("sector_dummy_excess_return", "sector_excess_return", BASE_FEATURES + VALUATION_FEATURES + SECTOR_DUMMY_FEATURES),
+    ("sector_dummy_interactions", "sector_excess_return", BASE_FEATURES + VALUATION_FEATURES + SECTOR_DUMMY_FEATURES + SECTOR_INTERACTION_FEATURES),
 ]
 
 
@@ -65,6 +74,7 @@ def main() -> int:
     events = pd.read_csv(EVENTS, parse_dates=["trade_date", "fwd_3m_return_end_date", "fwd_6m_return_end_date", "fwd_12m_return_end_date"])
     events = _add_sectors(events)
     events = _add_valuation_features(events)
+    events = _add_sector_dummy_features(events)
     events = _add_excess_return_targets(events)
     events.to_csv(OUTPUT_DIR / "ablation_events.csv", index=False)
     predictions = []
@@ -102,6 +112,17 @@ def _add_valuation_features(events: pd.DataFrame) -> pd.DataFrame:
     frame["fcf_yield"] = fcf / cap
     frame["gross_profit_to_market_cap"] = gross_profit / cap
     frame["growth_to_sales_multiple"] = frame["revenue_growth_yoy"] / (cap / revenue).replace(0, np.nan)
+    return frame
+
+
+def _add_sector_dummy_features(events: pd.DataFrame) -> pd.DataFrame:
+    frame = events.copy()
+    sectors = sorted(SECTOR_ETF)
+    for idx, sector in enumerate(sectors):
+        dummy = f"sector_dummy_{idx}"
+        frame[dummy] = (frame["gics_sector"] == sector).astype(float)
+        for feature in ["revenue_growth_yoy", "operating_margin", "fcf_margin", "debt_to_assets", "trailing_6m_return"]:
+            frame[f"{feature}_x_{dummy}"] = frame[feature] * frame[dummy]
     return frame
 
 
