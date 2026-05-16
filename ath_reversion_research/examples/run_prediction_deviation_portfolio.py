@@ -54,6 +54,18 @@ def main() -> int:
             _deviation_targets(signals, close, top_frac=0.40, mode="prediction_x_deviation"),
             base_weight=0.50,
     )
+    base_targets["monthly_weak_1m3m_trend_vol"] = _monthly_weak_relative_targets(
+        signals,
+        close,
+        top_frac=0.20,
+        select_frac=0.50,
+        max_vol_quantile=0.70,
+    )
+    base_targets["monthly_weak_blend_static"] = _blend_targets(
+        _static_top_quantile(signals, close, top_frac=0.20),
+        base_targets["monthly_weak_1m3m_trend_vol"],
+        base_weight=0.50,
+    )
     targets = dict(base_targets)
     corr_penalized_05 = _correlation_penalty_weights(
         close,
@@ -77,6 +89,14 @@ def main() -> int:
     )
     targets["base_plus_deviation_brake_vt35"] = _vol_target_weights(close, braked, target_vol=0.35, max_leverage=1.6)
     targets["base_plus_deviation_brake_vt30"] = _vol_target_weights(close, braked, target_vol=0.30, max_leverage=1.6)
+    monthly_braked = _drawdown_brake_weights(
+        close,
+        base_targets["monthly_weak_blend_static"],
+        brake_drawdown=-0.12,
+        brake_scale=0.60,
+    )
+    targets["monthly_weak_blend_brake_vt35"] = _vol_target_weights(close, monthly_braked, target_vol=0.35, max_leverage=1.6)
+    targets["monthly_weak_blend_brake_vt30"] = _vol_target_weights(close, monthly_braked, target_vol=0.30, max_leverage=1.6)
     corr_braked = _drawdown_brake_weights(
         close,
         corr_penalized_05,
@@ -159,6 +179,58 @@ def _deviation_targets(signals: pd.DataFrame, close: pd.DataFrame, top_frac: flo
 def _blend_targets(base: pd.DataFrame, overlay: pd.DataFrame, base_weight: float) -> pd.DataFrame:
     blended = base_weight * base.add(0.0, fill_value=0.0) + (1.0 - base_weight) * overlay.add(0.0, fill_value=0.0)
     return _normalize(blended.fillna(0.0))
+
+
+def _monthly_weak_relative_targets(
+    signals: pd.DataFrame,
+    close: pd.DataFrame,
+    top_frac: float,
+    select_frac: float,
+    max_vol_quantile: float,
+) -> pd.DataFrame:
+    target = pd.DataFrame(0.0, index=close.index, columns=close.columns)
+    returns_21 = close.pct_change(21)
+    returns_63 = close.pct_change(63)
+    returns_252 = close.pct_change(252)
+    vol_63 = close.pct_change().rolling(63, min_periods=30).std() * np.sqrt(252)
+
+    for trade_date, group in signals.groupby("trade_date"):
+        group = group.dropna(subset=["prediction"]).sort_values("prediction", ascending=False).copy()
+        eligible = group.head(max(1, int(np.ceil(len(group) * top_frac))))
+        eligible_symbols = [symbol for symbol in eligible["symbol"].astype(str) if symbol in close.columns]
+        if not eligible_symbols:
+            continue
+        start_pos = close.index.searchsorted(pd.Timestamp(trade_date), side="left")
+        end_pos = close.index.searchsorted(pd.Timestamp(group["fwd_12m_return_end_date"].max()), side="right")
+        active_dates = close.index[start_pos:end_pos]
+        if active_dates.empty:
+            continue
+        months = active_dates.to_period("M")
+        rebalance_dates = active_dates[np.r_[True, months[1:].values != months[:-1].values]]
+        current_weights = pd.Series(dtype=float)
+        prediction_rank = eligible.set_index("symbol")["prediction"].rank(pct=True).astype(float)
+        for date in active_dates:
+            if date in set(rebalance_dates):
+                r1 = returns_21.loc[date, eligible_symbols]
+                r3 = returns_63.loc[date, eligible_symbols]
+                r12 = returns_252.loc[date, eligible_symbols]
+                vol = vol_63.loc[date, eligible_symbols]
+                weak_score = -(0.50 * (r1 - r1.mean()) + 0.50 * (r3 - r3.mean()))
+                trend_ok = r12 > 0.0
+                vol_threshold = vol.quantile(max_vol_quantile)
+                vol_ok = vol <= vol_threshold
+                score = (weak_score.clip(lower=0.0) * prediction_rank.reindex(eligible_symbols).fillna(0.0)).where(
+                    trend_ok & vol_ok,
+                    0.0,
+                )
+                score = score.replace([np.inf, -np.inf], np.nan).dropna()
+                score = score[score > 0.0].sort_values(ascending=False)
+                n_select = max(1, int(np.ceil(len(eligible_symbols) * select_frac)))
+                selected = score.head(n_select)
+                current_weights = _positive_normalize(selected)
+            if not current_weights.empty:
+                target.loc[date, current_weights.index] += current_weights
+    return _normalize(target)
 
 
 def _add_signal_weights(target: pd.DataFrame, trade_date: pd.Timestamp, end_date: pd.Timestamp, weights: pd.Series) -> None:
@@ -313,6 +385,7 @@ def _write_report(summary: pd.DataFrame, yearly: pd.DataFrame, signals: pd.DataF
         "- The best deviance variant is a blend: keep half the static top-quintile basket and allocate half to high-ranked names lagging their cohort.",
         "- That blend did not increase raw return versus the static top-quintile basket, but it improved Sharpe, hit rate, volatility, and max drawdown.",
         "- Correlation-penalty variants downweight names with high trailing average correlation to the active basket; this is causal because target weights trade the next day.",
+        "- Monthly weak-relative-return variants rebalance monthly into high-ranked stocks with weak 1m/3m relative performance, but only when 12m trend and volatility filters pass.",
         "- Adding a causal drawdown brake and volatility target to the deviance blend produced the strongest return/Sharpe tradeoff in this short sample.",
         "- Pure recent-dip buying performed poorly, so the annual prediction rank must remain the anchor.",
         "- The sample is short and still based on current S&P 500 membership.",
