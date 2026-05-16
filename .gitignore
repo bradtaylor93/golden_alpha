@@ -1,6 +1,7 @@
 /dolthub_data/
 /.local/
 ath_reversion_research/reports/**/price_subset_yahoo.csv
+ath_reversion_research/reports/**/dolt_ohlcv_subset.csv
 ath_reversion_research/reports/**/dolt_full_feature_events.csv
 ath_reversion_research/reports/**/dolt_full_fundamentals_raw.csv
 ath_reversion_research/reports/**/walk_forward_predictions.csv
