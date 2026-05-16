@@ -61,6 +61,19 @@ Tests whether high-ranked annual prediction stocks that lag during the holding y
 | 93 | 30.30% | 104.85% | 32.59% | 3.22 | 0.31% | 0.00% | -9.59% | 54.84% | 2026 | corr_penalty_05_brake_vt35 |
 | 93 | 25.22% | 83.92% | 29.48% | 2.85 | 0.26% | 0.00% | -9.28% | 54.84% | 2026 | corr_penalty_05_brake_vt30 |
 
+## Benchmark comparison
+
+Same active period, using `base_plus_deviation_brake_vt35`:
+
+| Portfolio | Total Return | Annual Return | Annual Std | Sharpe | Max Drawdown |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Strategy | 91.64% | 65.59% | 34.79% | 1.89 | -36.23% |
+| SPY | 23.94% | 18.11% | 18.30% | 0.99 | -18.76% |
+| Random portfolios median | 6.87% | 5.29% | 24.44% | 0.21 | -30.05% |
+| Random portfolios 95th pct | 30.61% | 23.01% | 27.50% | 0.98 | -24.89% |
+
+The strategy beat 100/100 random portfolios on total return, annual return, and Sharpe. It did not beat random portfolios or SPY on volatility/drawdown: the edge comes with materially higher risk.
+
 ## Interpretation
 
 - The best deviance variant is a blend: keep half the static top-quintile basket and allocate half to high-ranked names lagging their cohort.
