@@ -34,13 +34,27 @@ def main() -> int:
     prices = download_yahoo_ohlcv(symbols, start="2024-01-01", chunk_size=25)
     close = prices.pivot(index="date", columns="symbol", values="close").sort_index()
 
-    schemes = {
+    base_schemes = {
         "top_quintile_equal": _target_weights(universe, close.index, top_frac=0.20, scheme="equal", side="long"),
         "top_quintile_rank_weight": _target_weights(universe, close.index, top_frac=0.20, scheme="rank", side="long"),
         "top_decile_equal": _target_weights(universe, close.index, top_frac=0.10, scheme="equal", side="long"),
         "top_decile_rank_weight": _target_weights(universe, close.index, top_frac=0.10, scheme="rank", side="long"),
         "top_bottom_quintile_long_short": _target_weights(universe, close.index, top_frac=0.20, scheme="rank", side="long_short"),
     }
+    schemes = dict(base_schemes)
+    for target_vol in [0.25, 0.35]:
+        schemes[f"top_quintile_equal_vol_target_{int(target_vol * 100)}"] = _vol_target_weights(
+            close,
+            base_schemes["top_quintile_equal"],
+            target_vol=target_vol,
+            max_leverage=1.6,
+        )
+    schemes["top_quintile_equal_vol_target_35_brake"] = _drawdown_brake_weights(
+        close,
+        schemes["top_quintile_equal_vol_target_35"],
+        brake_drawdown=-0.15,
+        brake_scale=0.60,
+    )
     returns = {}
     turnovers = {}
     active_masks = {}
@@ -113,6 +127,34 @@ def _portfolio_returns(close: pd.DataFrame, targets: pd.DataFrame) -> tuple[pd.S
     return net, turnover
 
 
+def _vol_target_weights(
+    close: pd.DataFrame,
+    targets: pd.DataFrame,
+    target_vol: float,
+    max_leverage: float,
+    lookback: int = 63,
+) -> pd.DataFrame:
+    raw_returns, _turnover = _portfolio_returns(close, targets)
+    realized_vol = raw_returns.rolling(lookback, min_periods=20).std().shift(1) * np.sqrt(252)
+    scale = (target_vol / realized_vol).clip(lower=0.20, upper=max_leverage).fillna(0.75)
+    return targets.mul(scale, axis=0)
+
+
+def _drawdown_brake_weights(
+    close: pd.DataFrame,
+    targets: pd.DataFrame,
+    brake_drawdown: float,
+    brake_scale: float,
+    lookback: int = 63,
+) -> pd.DataFrame:
+    returns, _turnover = _portfolio_returns(close, targets)
+    equity = (1.0 + returns).cumprod()
+    trailing_drawdown = equity / equity.rolling(lookback, min_periods=20).max() - 1.0
+    scale = pd.Series(1.0, index=targets.index)
+    scale[trailing_drawdown.shift(1) <= brake_drawdown] = brake_scale
+    return targets.mul(scale, axis=0)
+
+
 def _summary(returns: pd.DataFrame, turnover: pd.DataFrame) -> pd.DataFrame:
     rows = []
     for name in returns:
@@ -166,6 +208,9 @@ def _write_report(summary: pd.DataFrame, yearly: pd.DataFrame, predictions: pd.D
         "## Interpretation",
         "",
         "- This is the more realistic deployment translation of the rank signal: it tests capital-weighted daily P&L, not just event forward returns.",
+        "- Equal-weighting the top prediction quintile was better than rank weighting or top-decile concentration, suggesting prediction ranks are useful but prediction magnitudes are not well calibrated for aggressive sizing.",
+        "- The 35% volatility target plus drawdown brake produced the highest annualized return and slightly lower drawdown, but the unscaled top-quintile equal-weight portfolio retained the better Sharpe.",
+        "- Sector-neutral prototypes reduced return too much and are not included as recommended variants.",
         "- The sample is still short and based on current S&P 500 membership, so survivorship bias remains.",
     ]
     (OUTPUT_DIR / "PREDICTION_WEIGHTED_PORTFOLIO.md").write_text("\n".join(lines), encoding="utf-8")
@@ -174,8 +219,10 @@ def _write_report(summary: pd.DataFrame, yearly: pd.DataFrame, predictions: pd.D
 def _markdown_table(frame: pd.DataFrame) -> str:
     display = frame.copy()
     for col in display.columns:
-        if pd.api.types.is_numeric_dtype(display[col]) and col not in {"observations", "year"}:
-            if any(token in col for token in ["return", "std", "sharpe", "drawdown", "rate", "turnover"]):
+        if col == "sharpe":
+            display[col] = display[col].map(lambda v: f"{float(v):.2f}" if pd.notna(v) else "")
+        elif pd.api.types.is_numeric_dtype(display[col]) and col not in {"observations", "year"}:
+            if any(token in col for token in ["return", "std", "drawdown", "rate", "turnover"]):
                 display[col] = display[col].map(lambda v: f"{float(v) * 100:.2f}%" if pd.notna(v) else "")
     header = "| " + " | ".join(display.columns) + " |"
     separator = "| " + " | ".join(["---"] * len(display.columns)) + " |"
