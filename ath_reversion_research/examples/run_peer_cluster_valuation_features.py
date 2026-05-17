@@ -190,8 +190,10 @@ def main() -> int:
     ]
     pred = pd.concat(predictions, ignore_index=True)
     perf = hist._performance(pred)
+    sharpe = _top_quintile_sharpe(pred)
     perf.to_csv(OUTPUT_DIR / "performance_summary.csv", index=False)
-    _write_report(perf, events)
+    sharpe.to_csv(OUTPUT_DIR / "top_quintile_sharpe_summary.csv", index=False)
+    _write_report(perf, sharpe, events)
     print(perf.to_string(index=False))
     return 0
 
@@ -500,7 +502,36 @@ def _coverage(events: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _write_report(perf: pd.DataFrame, events: pd.DataFrame) -> None:
+def _top_quintile_sharpe(pred: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for (experiment, bucket), group in pred.groupby(["experiment", "regression_bucket"]):
+        annual_returns = []
+        for year, year_group in group.groupby("test_year"):
+            ranked = year_group.dropna(subset=["prediction", "target_return"]).copy()
+            if len(ranked) < 10:
+                continue
+            cutoff = ranked["prediction"].quantile(0.80)
+            annual_returns.append((year, ranked.loc[ranked["prediction"] >= cutoff, "target_return"].mean()))
+        series = pd.Series(dict(annual_returns)).sort_index()
+        std = series.std(ddof=1)
+        rows.append(
+            {
+                "experiment": experiment,
+                "regression_bucket": bucket,
+                "years": len(series),
+                "annual_topq_mean": series.mean(),
+                "annual_topq_std": std,
+                "annual_topq_sharpe": series.mean() / std if len(series) > 1 and std > 0 else np.nan,
+                "min_year_return": series.min(),
+                "min_return_year": int(series.idxmin()) if len(series) else np.nan,
+            }
+        )
+    return pd.DataFrame(rows).sort_values(
+        ["regression_bucket", "annual_topq_sharpe"], ascending=[True, False]
+    )
+
+
+def _write_report(perf: pd.DataFrame, sharpe: pd.DataFrame, events: pd.DataFrame) -> None:
     with (OUTPUT_DIR / "PEER_CLUSTER_VALUATION_FEATURES.md").open("w", encoding="utf-8") as f:
         f.write("# Peer and cluster valuation feature test\n\n")
         f.write(
@@ -525,12 +556,18 @@ def _write_report(perf: pd.DataFrame, events: pd.DataFrame) -> None:
         f.write(hist._markdown_table(_coverage(events)))
         f.write("\n\n## Performance summary\n\n")
         f.write(hist._markdown_table(perf))
+        f.write("\n\n## Top-quintile annual portfolio Sharpe\n\n")
+        f.write(
+            "Sharpe here is the mean/std of yearly top-quintile 12-month forward returns. "
+            "It is a coarse annual portfolio proxy, not a daily marked-to-market live portfolio Sharpe.\n\n"
+        )
+        f.write(hist._markdown_table(sharpe))
         f.write("\n\n## Interpretation\n\n")
-        f.write(_interpretation(perf))
+        f.write(_interpretation(perf, sharpe))
         f.write("\n")
 
 
-def _interpretation(perf: pd.DataFrame) -> str:
+def _interpretation(perf: pd.DataFrame, sharpe: pd.DataFrame) -> str:
     lines = []
     for bucket in ["all", "large_cap", "mid_cap"]:
         subset = perf[(perf["regression_bucket"] == bucket) & (perf["target_type"] == "raw_return")]
@@ -552,6 +589,18 @@ def _interpretation(perf: pd.DataFrame) -> str:
         "- Sector-aware residuals were the best mid-cap variant, suggesting valuation expectations should account "
         "for industry context when modeling smaller names."
     )
+    for bucket in ["all", "large_cap", "mid_cap"]:
+        subset = sharpe[sharpe["regression_bucket"] == bucket]
+        if subset.empty:
+            continue
+        best = subset.sort_values("annual_topq_sharpe", ascending=False).iloc[0]
+        benchmark = subset[subset["experiment"] == "best_known_current_plus_hist"]
+        bench_sharpe = float(benchmark["annual_topq_sharpe"].iloc[0]) if not benchmark.empty else np.nan
+        lines.append(
+            f"- {bucket}: best annual top-quintile Sharpe is `{best['experiment']}` at "
+            f"{best['annual_topq_sharpe']:.2f}, delta {best['annual_topq_sharpe'] - bench_sharpe:+.2f} "
+            "versus current+historical valuation."
+        )
     return "\n".join(lines)
 
 
