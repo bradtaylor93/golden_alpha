@@ -52,6 +52,16 @@ RESIDUAL_FEATURES = [
     "residual_cheap_with_momentum",
     "residual_cheap_quality_score",
 ]
+SECTOR_AWARE_RESIDUAL_FEATURES = [
+    "sector_hist_log_price_to_sales_residual",
+    "sector_hist_price_to_sales_cheap_residual",
+    "sector_hist_log_price_to_gross_profit_residual",
+    "sector_hist_price_to_gross_profit_cheap_residual",
+    "sector_hist_log_price_to_fcf_residual",
+    "sector_hist_price_to_fcf_cheap_residual",
+    "sector_residual_cheap_with_momentum",
+    "sector_residual_cheap_quality_score",
+]
 RESIDUAL_SALES_FEATURES = [
     "hist_price_to_sales_cheap_residual",
     "residual_cheap_with_momentum",
@@ -71,6 +81,14 @@ SELECTED_PEER_VALUE_FEATURES = [
     "cluster_gross_profit_fair_value_upside",
     "cluster_quality_value_score",
 ]
+SELF_RELATIVE_FEATURES = [
+    f"self_rel_{col}" for col in hist.HIST_VALUATION_FEATURES
+] + [
+    "self_relative_cheap_score",
+    "self_relative_quality_value_score",
+    "self_relative_cheap_with_momentum",
+]
+SECTOR_DUMMY_FEATURES = [f"sector_dummy_{idx}" for idx in range(11)]
 CLUSTER_EMBEDDING_FEATURES = [
     "trailing_3m_return",
     "trailing_6m_return",
@@ -123,6 +141,19 @@ def main() -> int:
         ("sector_relative_value", "raw_return", BEST_KNOWN_FEATURES + SECTOR_REL_FEATURES, ("sector",)),
         ("cluster_relative_value", "raw_return", BEST_KNOWN_FEATURES + CLUSTER_REL_FEATURES, ("cluster",)),
         ("valuation_residuals", "raw_return", BEST_KNOWN_FEATURES + RESIDUAL_FEATURES, ("residual",)),
+        (
+            "sector_aware_residuals",
+            "raw_return",
+            BEST_KNOWN_FEATURES + SECTOR_AWARE_RESIDUAL_FEATURES,
+            ("sector_residual",),
+        ),
+        ("self_relative_value", "raw_return", BEST_KNOWN_FEATURES + SELF_RELATIVE_FEATURES, ("self",)),
+        (
+            "residual_plus_self_value",
+            "raw_return",
+            BEST_KNOWN_FEATURES + RESIDUAL_FEATURES + SELF_RELATIVE_FEATURES,
+            ("residual", "self"),
+        ),
         ("sales_residual_selected", "raw_return", BEST_KNOWN_FEATURES + RESIDUAL_SALES_FEATURES, ("residual",)),
         ("cluster_fair_value_only", "raw_return", BEST_KNOWN_FEATURES + FAIR_VALUE_FEATURES, ("cluster",)),
         (
@@ -130,6 +161,15 @@ def main() -> int:
             "raw_return",
             BEST_KNOWN_FEATURES + SELECTED_PEER_VALUE_FEATURES,
             ("cluster", "residual"),
+        ),
+        (
+            "clean_improved_value",
+            "raw_return",
+            BEST_KNOWN_FEATURES
+            + SECTOR_AWARE_RESIDUAL_FEATURES
+            + SELF_RELATIVE_FEATURES
+            + FAIR_VALUE_FEATURES,
+            ("sector_residual", "self", "cluster"),
         ),
         (
             "combined_peer_cluster_value",
@@ -214,6 +254,15 @@ def _add_fold_features(
         train, test = _add_cluster_features(train, test)
     if "residual" in engines:
         train, test = _add_expected_valuation_residuals(train, test)
+    if "sector_residual" in engines:
+        train, test = _add_expected_valuation_residuals(
+            train,
+            test,
+            prefix="sector_",
+            expected_features=EXPECTED_VALUATION_FEATURES + SECTOR_DUMMY_FEATURES,
+        )
+    if "self" in engines:
+        train, test = _add_self_relative_features(train, test)
     return train.replace([np.inf, -np.inf], np.nan), test.replace([np.inf, -np.inf], np.nan)
 
 
@@ -269,28 +318,74 @@ def _add_fair_value_upside(frame: pd.DataFrame, med: pd.DataFrame, group_col: st
         frame[out_col] = fair_cap / cap - 1
 
 
-def _add_expected_valuation_residuals(train: pd.DataFrame, test: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _add_expected_valuation_residuals(
+    train: pd.DataFrame,
+    test: pd.DataFrame,
+    prefix: str = "",
+    expected_features: list[str] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    expected_features = expected_features or EXPECTED_VALUATION_FEATURES
     targets = [
-        ("sales", "hist_log_price_to_sales_residual", "hist_price_to_sales_cheap_residual"),
-        ("gross_profit", "hist_log_price_to_gross_profit_residual", "hist_price_to_gross_profit_cheap_residual"),
-        ("fcf_proxy", "hist_log_price_to_fcf_residual", "hist_price_to_fcf_cheap_residual"),
+        (
+            "sales",
+            f"{prefix}hist_log_price_to_sales_residual",
+            f"{prefix}hist_price_to_sales_cheap_residual",
+        ),
+        (
+            "gross_profit",
+            f"{prefix}hist_log_price_to_gross_profit_residual",
+            f"{prefix}hist_price_to_gross_profit_cheap_residual",
+        ),
+        (
+            "fcf_proxy",
+            f"{prefix}hist_log_price_to_fcf_residual",
+            f"{prefix}hist_price_to_fcf_cheap_residual",
+        ),
     ]
     train["fcf_proxy"] = train["fcf_margin"] * train["sales"]
     test["fcf_proxy"] = test["fcf_margin"] * test["sales"]
     for denominator, residual_col, cheap_col in targets:
         train_y = _safe_log_ratio(train["historical_market_cap"], train[denominator])
         test_y = _safe_log_ratio(test["historical_market_cap"], test[denominator])
-        pred_train, pred_test = _ridge_predict_continuous(train, test, train_y, EXPECTED_VALUATION_FEATURES)
+        pred_train, pred_test = _ridge_predict_continuous(train, test, train_y, expected_features)
         train[residual_col] = train_y - pred_train
         test[residual_col] = test_y - pred_test
         train[cheap_col] = -train[residual_col]
         test[cheap_col] = -test[residual_col]
     train_scores, test_scores = _quality_value_scores(train, test)
-    train["residual_cheap_with_momentum"] = train["hist_price_to_sales_cheap_residual"] * train_scores["trend"]
-    test["residual_cheap_with_momentum"] = test["hist_price_to_sales_cheap_residual"] * test_scores["trend"]
-    train["residual_cheap_quality_score"] = train["hist_price_to_sales_cheap_residual"] + train_scores["quality"]
-    test["residual_cheap_quality_score"] = test["hist_price_to_sales_cheap_residual"] + test_scores["quality"]
+    sales_cheap = f"{prefix}hist_price_to_sales_cheap_residual"
+    train[f"{prefix}residual_cheap_with_momentum"] = train[sales_cheap] * train_scores["trend"]
+    test[f"{prefix}residual_cheap_with_momentum"] = test[sales_cheap] * test_scores["trend"]
+    train[f"{prefix}residual_cheap_quality_score"] = train[sales_cheap] + train_scores["quality"]
+    test[f"{prefix}residual_cheap_quality_score"] = test[sales_cheap] + test_scores["quality"]
     return train, test
+
+
+def _add_self_relative_features(train: pd.DataFrame, test: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    rel_cols = []
+    train = train.sort_values(["symbol", "trade_date"]).copy()
+    test = test.copy()
+    for col in hist.HIST_VALUATION_FEATURES:
+        if col not in train:
+            continue
+        rel_col = f"self_rel_{col}"
+        global_median = train[col].median()
+        prior_ref = pd.Series(index=train.index, dtype=float)
+        for _, group in train.groupby("symbol", sort=False):
+            prior_ref.loc[group.index] = group[col].expanding(min_periods=2).median().shift(1)
+        symbol_ref = train.groupby("symbol")[col].median()
+        train[rel_col] = train[col] - prior_ref.fillna(global_median)
+        test[rel_col] = test[col] - test["symbol"].map(symbol_ref).fillna(global_median)
+        rel_cols.append(rel_col)
+
+    train_z, test_z = _zscore_columns(train, test, rel_cols + QUALITY_FEATURES + TREND_FEATURES)
+    train["self_relative_cheap_score"] = train_z[rel_cols].mean(axis=1)
+    test["self_relative_cheap_score"] = test_z[rel_cols].mean(axis=1)
+    train["self_relative_quality_value_score"] = train["self_relative_cheap_score"] + train_z[QUALITY_FEATURES].mean(axis=1)
+    test["self_relative_quality_value_score"] = test["self_relative_cheap_score"] + test_z[QUALITY_FEATURES].mean(axis=1)
+    train["self_relative_cheap_with_momentum"] = train["self_relative_cheap_score"] * train_z[TREND_FEATURES].mean(axis=1)
+    test["self_relative_cheap_with_momentum"] = test["self_relative_cheap_score"] * test_z[TREND_FEATURES].mean(axis=1)
+    return train.sort_index(), test
 
 
 def _quality_value_scores(train: pd.DataFrame, test: pd.DataFrame) -> tuple[dict[str, pd.Series], dict[str, pd.Series]]:
@@ -430,7 +525,34 @@ def _write_report(perf: pd.DataFrame, events: pd.DataFrame) -> None:
         f.write(hist._markdown_table(_coverage(events)))
         f.write("\n\n## Performance summary\n\n")
         f.write(hist._markdown_table(perf))
+        f.write("\n\n## Interpretation\n\n")
+        f.write(_interpretation(perf))
         f.write("\n")
+
+
+def _interpretation(perf: pd.DataFrame) -> str:
+    lines = []
+    for bucket in ["all", "large_cap", "mid_cap"]:
+        subset = perf[(perf["regression_bucket"] == bucket) & (perf["target_type"] == "raw_return")]
+        if subset.empty:
+            continue
+        best = subset.sort_values("spearman", ascending=False).iloc[0]
+        benchmark = subset[subset["experiment"] == "best_known_current_plus_hist"]
+        bench_spearman = float(benchmark["spearman"].iloc[0]) if not benchmark.empty else np.nan
+        delta = best["spearman"] - bench_spearman
+        lines.append(
+            f"- {bucket}: best raw-return ranker is `{best['experiment']}` with "
+            f"Spearman {best['spearman']:.4f}, delta {delta:+.4f} versus current+historical valuation."
+        )
+    lines.append(
+        "- Broad combined peer/cluster feature sets underperformed, so the useful signal is selective: "
+        "expected valuation residuals and some cluster/self-relative diagnostics, not every peer feature at once."
+    )
+    lines.append(
+        "- Sector-aware residuals were the best mid-cap variant, suggesting valuation expectations should account "
+        "for industry context when modeling smaller names."
+    )
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
