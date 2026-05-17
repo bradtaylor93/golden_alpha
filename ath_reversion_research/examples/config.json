@@ -1,0 +1,36 @@
+{
+  "data_csv": "data/daily_ohlcv.csv",
+  "output_dir": "reports/ath_reversion_run",
+  "universes": [
+    "high_market_cap_cross_asset",
+    "lower_market_cap_under_10bn_sample"
+  ],
+  "backtest": {
+    "train_days": 756,
+    "test_days": 126,
+    "step_days": 126,
+    "execution_lag_days": 1,
+    "transaction_cost_bps": 10.0,
+    "max_gross_exposure": 1.0,
+    "benchmark_symbol": "SPY"
+  },
+  "ath_dip_recovery": {
+    "ath_lookback": 756,
+    "dip_pct": 0.08,
+    "recovery_trigger_pct": 0.025,
+    "max_hold_days": 60,
+    "stop_loss_pct": 0.12,
+    "take_profit_pct": 0.1,
+    "position_size": 1.0
+  },
+  "exponential_reversion_short": {
+    "trend_lookback": 126,
+    "stretch_zscore": 2.0,
+    "confirmation_days": 3,
+    "confirmation_drop_pct": 0.02,
+    "max_hold_days": 30,
+    "stop_loss_pct": 0.08,
+    "take_profit_pct": 0.08,
+    "position_size": -1.0
+  }
+}

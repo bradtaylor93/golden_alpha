@@ -1,0 +1,2 @@
+lookback,top_n,target_vol,drawdown_penalty,train_objective,train_annual_return,train_sharpe,train_max_drawdown,validation_annual_return,validation_sharpe,validation_max_drawdown
+63,5,0.2,1.0,0.8113064704464732,0.24827431360536645,1.0513083064246387,-0.2896566986992388,0.24187847916235117,1.1186317190435806,-0.16798421586221313

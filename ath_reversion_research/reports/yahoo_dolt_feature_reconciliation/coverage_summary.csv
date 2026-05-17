@@ -1,0 +1,9 @@
+metric,value
+yahoo_rows,1507
+dolt_rows,5871
+matched_rows,1411
+yahoo_symbols,503
+dolt_symbols,496
+matched_symbols,496
+matched_min_fiscal_year,2023
+matched_max_fiscal_year,2026

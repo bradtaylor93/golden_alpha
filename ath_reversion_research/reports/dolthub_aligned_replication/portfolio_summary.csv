@@ -1,0 +1,2 @@
+observations,total_return,annual_return,annual_std,sharpe,average_daily_return,average_daily_turnover,max_drawdown,hit_rate,portfolio
+2589,10.903526666483415,0.2726259024963209,0.24198055290235285,1.1266438530964695,0.0010734377570946,0.01462461029006655,-0.3194828148073007,0.5550405561993047,dolthub_aligned_largecap_top_quintile_equal
